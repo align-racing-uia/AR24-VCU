@@ -10,11 +10,12 @@ use fdcan::filter::{StandardFilter, StandardFilterSlot};
 use fdcan::frame::{TxFrameHeader, FrameFormat, RxFrameInfo};
 use fdcan::id::{StandardId, Id};
 use stm32g4xx_hal::can::CanExt;
+use stm32g4xx_hal::delay::SYSTDelayExt;
 use stm32g4xx_hal::gpio::{self, Speed, AF9};
-use stm32g4xx_hal::rcc::SysClockSrc;
+use stm32g4xx_hal::rcc::{PLLSrc, PllConfig, PllMDiv, PllNMul, PllRDiv, Prescaler, SysClockSrc};
 use stm32g4xx_hal::stm32::{FDCAN1, FDCAN2};
 use stm32g4xx_hal::{prelude, block};
-use stm32g4xx_hal::{stm32::Peripherals, rcc::{RccExt, Config}, gpio::GpioExt, timer::Timer, delay::DelayFromCountDownTimer, hal::{digital::v2::ToggleableOutputPin, blocking::delay::DelayMs}};
+use stm32g4xx_hal::{stm32::Peripherals, rcc::{RccExt, Config}, gpio::GpioExt, hal::{digital::v2::ToggleableOutputPin}};
 use vcu_v2 as _; // global logger + panicking-behavior + memory layout
 use stm32g4xx_hal::time::U32Ext;
 
@@ -79,7 +80,17 @@ fn main() -> ! {
     let cp = cortex_m::Peripherals::take().unwrap();
 
     // Setting the system to run from a high speed external 12MHz crystal.
-    let mut config = Config::new(SysClockSrc::HSE(12.mhz()));
+    let mut config = Config::new(SysClockSrc::PLL);
+    let pll_config = PllConfig { // 12 / 1 * 85 / 6 = 170MHz
+        mux: PLLSrc::HSE(12.mhz()), 
+        m: PllMDiv::DIV_1, 
+        n: PllNMul::MUL_85, 
+        r: Some(PllRDiv::DIV_6), 
+        q: None, 
+        p: None 
+    };
+    config = config.pll_cfg(pll_config);
+        
     // Locking the RCC
     let mut rcc = dp.RCC.freeze(config);
 
@@ -90,9 +101,8 @@ fn main() -> ! {
     let gpioc = dp.GPIOC.split(&mut rcc);
 
 
-    // Making a delay timer
-    let timer2 = Timer::new(dp.TIM2, &rcc.clocks);
-    let mut delay = DelayFromCountDownTimer::new(timer2.start_count_down(10_u32.ms()));
+    // Making a syst delay
+    let mut delay = cp.SYST.delay(&rcc.clocks);
 
     let mut brk = gpioc.pc13.into_push_pull_output();
 
@@ -143,7 +153,7 @@ fn main() -> ! {
 
     loop {
         
-        delay.delay_ms(1000u32);
+        delay.delay_ms(1000);
         brk.toggle().unwrap();
     }
 
