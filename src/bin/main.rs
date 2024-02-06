@@ -3,6 +3,7 @@
 
 use core::num::{NonZeroU16, NonZeroU8};
 
+use cortex_m::delay::Delay;
 use defmt::{info, println};
 use fdcan::{NormalOperationMode, FdCan, Instance};
 use fdcan::config::NominalBitTiming;
@@ -81,6 +82,7 @@ fn main() -> ! {
 
     // Setting the system to run from a high speed external 12MHz crystal.
     let mut config = Config::new(SysClockSrc::PLL);
+    config = config.ahb_psc(Prescaler::NotDivided);
     let pll_config = PllConfig { // 12 / 1 * 85 / 6 = 170MHz
         mux: PLLSrc::HSE(12.mhz()), 
         m: PllMDiv::DIV_1, 
@@ -90,7 +92,7 @@ fn main() -> ! {
         p: None 
     };
     config = config.pll_cfg(pll_config);
-        
+
     // Locking the RCC
     let mut rcc = dp.RCC.freeze(config);
 
@@ -101,9 +103,8 @@ fn main() -> ! {
     let gpioc = dp.GPIOC.split(&mut rcc);
 
 
-    // Making a syst delay
-    let mut delay = cp.SYST.delay(&rcc.clocks);
-
+    // Making a syst delay running on the system clock, on 170MHz
+    let mut delay = Delay::new(cp.SYST, 170000000);
     let mut brk = gpioc.pc13.into_push_pull_output();
 
 
