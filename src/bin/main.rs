@@ -13,7 +13,7 @@ use fdcan::id::{StandardId, Id};
 use stm32g4xx_hal::can::CanExt;
 use stm32g4xx_hal::delay::SYSTDelayExt;
 use stm32g4xx_hal::gpio::{self, Speed, AF9};
-use stm32g4xx_hal::rcc::{PLLSrc, PllConfig, PllMDiv, PllNMul, PllRDiv, Prescaler, SysClockSrc};
+use stm32g4xx_hal::rcc::{PLLSrc, PllConfig, PllMDiv, PllNMul, PllPDiv, PllQDiv, PllRDiv, Prescaler, SysClockSrc};
 use stm32g4xx_hal::stm32::{FDCAN1, FDCAN2};
 use stm32g4xx_hal::{prelude, block};
 use stm32g4xx_hal::{stm32::Peripherals, rcc::{RccExt, Config}, gpio::GpioExt, hal::{digital::v2::ToggleableOutputPin}};
@@ -80,32 +80,41 @@ fn main() -> ! {
     let dp = Peripherals::take().unwrap();
     let cp = cortex_m::Peripherals::take().unwrap();
 
+    println!("Setting system clock");
     // Setting the system to run from a high speed external 12MHz crystal.
     let mut config = Config::new(SysClockSrc::PLL);
     config = config.ahb_psc(Prescaler::NotDivided);
-    let pll_config = PllConfig { // 12 / 1 * 85 / 6 = 170MHz
+    let pll_config = PllConfig { // 12 / 3 * 85 / 2 = 170MHz
         mux: PLLSrc::HSE(12.mhz()), 
-        m: PllMDiv::DIV_1, 
+        m: PllMDiv::DIV_3, 
         n: PllNMul::MUL_85, 
-        r: Some(PllRDiv::DIV_6), 
-        q: None, 
-        p: None 
+        r: Some(PllRDiv::DIV_2), 
+        q: Some(PllQDiv::DIV_2), 
+        p: Some(PllPDiv::DIV_2)
     };
     config = config.pll_cfg(pll_config);
 
+    println!("Freezing RCC");
     // Locking the RCC
     let mut rcc = dp.RCC.freeze(config);
-
+    println!("RCC Frozen");
 
     // Initializing the GPIO rows
     let gpiob = dp.GPIOB.split(&mut rcc);
     let gpioa = dp.GPIOA.split(&mut rcc);
     let gpioc = dp.GPIOC.split(&mut rcc);
+    println!("Initializing delay");
 
 
     // Making a syst delay running on the system clock, on 170MHz
     let mut delay = Delay::new(cp.SYST, 170000000);
     let mut brk = gpioc.pc13.into_push_pull_output();
+    
+    println!("Initializing debug lights");
+    // Debugging lights
+    let mut blue_led = gpiob.pb9.into_push_pull_output();
+    let mut red_led = gpiob.pb7.into_push_pull_output();
+    blue_led.toggle().unwrap();
 
 
     // Initializing canbus1
@@ -156,6 +165,7 @@ fn main() -> ! {
         
         delay.delay_ms(1000);
         brk.toggle().unwrap();
+        blue_led.toggle().unwrap();
     }
 
 }
