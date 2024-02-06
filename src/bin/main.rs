@@ -10,7 +10,7 @@ use fdcan::filter::{StandardFilter, StandardFilterSlot};
 use fdcan::frame::{TxFrameHeader, FrameFormat, RxFrameInfo};
 use fdcan::id::{StandardId, Id};
 use stm32g4xx_hal::can::CanExt;
-use stm32g4xx_hal::gpio::{Speed, self};
+use stm32g4xx_hal::gpio::{self, Speed, AF9};
 use stm32g4xx_hal::rcc::SysClockSrc;
 use stm32g4xx_hal::stm32::{FDCAN1, FDCAN2};
 use stm32g4xx_hal::{prelude, block};
@@ -19,7 +19,6 @@ use vcu_v2 as _; // global logger + panicking-behavior + memory layout
 use stm32g4xx_hal::time::U32Ext;
 
 const DTI_NODE_ID: u16 = 0; // Must be filled out!
-
 
 struct StateMachine       
 {
@@ -88,10 +87,15 @@ fn main() -> ! {
     // Initializing the GPIO rows
     let gpiob = dp.GPIOB.split(&mut rcc);
     let gpioa = dp.GPIOA.split(&mut rcc);
+    let gpioc = dp.GPIOC.split(&mut rcc);
+
 
     // Making a delay timer
     let timer2 = Timer::new(dp.TIM2, &rcc.clocks);
     let mut delay = DelayFromCountDownTimer::new(timer2.start_count_down(10_u32.ms()));
+
+    let mut brk = gpioc.pc13.into_push_pull_output();
+
 
     // Initializing canbus1
     let mut can1 = {
@@ -138,16 +142,14 @@ fn main() -> ! {
     let mut sm = StateMachine::new();
 
     loop {
-        // First step is to read from the canbus
-        read_canbus_data(&mut can1, &mut can2, &mut sm);
-
-        send_canbus_dti(&mut can1, &mut sm);
-        // send_canbus_sensor(&mut can2, sm);
+        
+        delay.delay_ms(1000u32);
+        brk.toggle().unwrap();
     }
 
 }
 
-fn read_canbus_data<I1, I2>(
+fn process_canbus_data<I1, I2>(
     can1: &mut FdCan<I1, NormalOperationMode>,
     can2: &mut FdCan<I2, NormalOperationMode>,
     sm: &mut StateMachine,
@@ -192,19 +194,21 @@ fn read_canbus_data<I1, I2>(
 
 fn send_canbus_dti<I1>(
     dti_can: &mut FdCan<I1, NormalOperationMode>,
-    sm: &mut StateMachine,
+    frame_data: [u8; 8],
+    packet_id: u16
 ) -> () 
     where
         I1: Instance
 {
-    let mut frame_data = [0; 8];
+    let id: u16 = (packet_id << 5) | DTI_NODE_ID; // format of DTI canbus messages
     let frame_header = TxFrameHeader {
         len: 8,
         frame_format: FrameFormat::Standard,
-        id: Id::Standard(StandardId::new(0x1111).unwrap()), // Insert DTI id here
+        id: Id::Standard(StandardId::new(id).unwrap()), // Insert DTI id here
         bit_rate_switching: false,
         marker: None,
     };
+    dti_can.transmit(frame_header, &frame_data).unwrap();
 }
 
 // A cyclic message that should be sent every so often to keep the car in ready to drive mode
@@ -213,15 +217,7 @@ fn drive_enable<I1>(dti_can: &mut FdCan<I1, NormalOperationMode>)
         I1: Instance
 {
     let packet_id: u16 = 0x0C;
-    let id: u16 = (packet_id << 5) | DTI_NODE_ID; // format of DTI canbus messages
-    let frame_header = TxFrameHeader {
-        len: 8,
-        frame_format: FrameFormat::Standard,
-        id: Id::Standard(StandardId::new(id).unwrap()), // Insert DTI id here
-        bit_rate_switching: false,
-        marker: None,
-    };
-    dti_can.transmit(frame_header, &[1,0,0,0,0,0,0,0]).unwrap();
+    send_canbus_dti(dti_can, [1,0,0,0,0,0,0,0], packet_id);
 }
 
 // Sets the forward current draw to a certain percentage
@@ -230,15 +226,7 @@ fn set_forward_current<I1>(dti_can: &mut FdCan<I1, NormalOperationMode>, current
         I1: Instance
 {
     let packet_id: u16 = 0x05;
-    let id: u16 = (packet_id << 5) | DTI_NODE_ID; // format of DTI canbus messages
-    let frame_header = TxFrameHeader {
-        len: 8,
-        frame_format: FrameFormat::Standard,
-        id: Id::Standard(StandardId::new(id).unwrap()), // Insert DTI id here
-        bit_rate_switching: false,
-        marker: None,
-    };
-    dti_can.transmit(frame_header, &[current_percentage,0,0,0,0,0,0,0]).unwrap();
+    send_canbus_dti(dti_can, [current_percentage,0,0,0,0,0,0,0], packet_id);
 }
 
 // Sets the braking force as a percentage
@@ -246,16 +234,8 @@ fn set_brake_current<I1>(dti_can: &mut FdCan<I1, NormalOperationMode>, brake_per
 where
     I1: Instance
 {
-let packet_id: u16 = 0x06;
-let id: u16 = (packet_id << 5) | DTI_NODE_ID; // format of DTI canbus messages
-let frame_header = TxFrameHeader {
-    len: 8,
-    frame_format: FrameFormat::Standard,
-    id: Id::Standard(StandardId::new(id).unwrap()), // Insert DTI id here
-    bit_rate_switching: false,
-    marker: None,
-};
-dti_can.transmit(frame_header, &[brake_percentage,0,0,0,0,0,0,0]).unwrap();
+    let packet_id: u16 = 0x06;
+    send_canbus_dti(dti_can, [brake_percentage,0,0,0,0,0,0,0], packet_id);
 }
 
 fn id_to_u32(id: Id) -> u32 {
