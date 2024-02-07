@@ -1,9 +1,11 @@
 #![no_main]
 #![no_std]
 
+use core::fmt::Debug;
 use core::num::{NonZeroU16, NonZeroU8};
 
 use cortex_m::delay::Delay;
+use cortex_m_semihosting::debug;
 use defmt::{info, println};
 use fdcan::{NormalOperationMode, FdCan, Instance};
 use fdcan::config::NominalBitTiming;
@@ -16,6 +18,7 @@ use stm32g4xx_hal::gpio::{self, Speed, AF9};
 use stm32g4xx_hal::hal::digital::v2::OutputPin;
 use stm32g4xx_hal::rcc::{PLLSrc, PllConfig, PllMDiv, PllNMul, PllPDiv, PllQDiv, PllRDiv, Prescaler, SysClockSrc};
 use stm32g4xx_hal::stm32::{FDCAN1, FDCAN2};
+use stm32g4xx_hal::timer::{MonoTimer, Timer};
 use stm32g4xx_hal::{prelude, block};
 use stm32g4xx_hal::{stm32::Peripherals, rcc::{RccExt, Config}, gpio::GpioExt, hal::{digital::v2::ToggleableOutputPin}};
 use stm32g4xx_hal::time::U32Ext;
@@ -25,7 +28,6 @@ use vcu_v2 as _; // global logger + panicking-behavior + memory layout
 use vcu_v2::helpers;
 use vcu_v2::statemachine::StateMachine;
 
-const DTI_NODE_ID: u16 = 0; // Must be filled out!
 
 #[cortex_m_rt::entry]
 fn main() -> ! {
@@ -51,6 +53,8 @@ fn main() -> ! {
     let mut rcc = dp.RCC.freeze(config);
     println!("RCC Frozen");
 
+    println!("Sys clock: {}", rcc.clocks.sys_clk.0);
+
     // Initializing the GPIO rows   
     let gpiob = dp.GPIOB.split(&mut rcc);
     let gpioa = dp.GPIOA.split(&mut rcc);
@@ -66,11 +70,14 @@ fn main() -> ! {
     // Debugging lights
     let mut blue_led = gpiob.pb9.into_push_pull_output();
     let mut red_led = gpiob.pb7.into_push_pull_output();
-    blue_led.toggle().unwrap();
+
+    // Debug timer
+    let mut debug_timer = MonoTimer::new(cp.DWT, cp.DCB, &rcc.clocks);
+    let mut debug_timestamp = debug_timer.now();
 
 
     // Initializing canbus1
-    let mut can1 = {
+    let mut dti_can = {
         println!("Initializing CAN1");
         let tx = gpioa.pa12.into_alternate().set_speed(Speed::VeryHigh);
         let rx = gpioa.pa11.into_alternate().set_speed(Speed::VeryHigh);
@@ -91,7 +98,7 @@ fn main() -> ! {
     };
 
     // Initializing canbus2
-    let mut can2 = {
+    let mut sensor_can = {
         println!("Initializing CAN2");
         let tx = gpiob.pb6.into_alternate().set_speed(Speed::VeryHigh);
         let rx = gpiob.pb5.into_alternate().set_speed(Speed::VeryHigh);
@@ -111,10 +118,10 @@ fn main() -> ! {
         can.into_normal()
     };
 
-    let mut sm = StateMachine::new();
+    let mut sm = StateMachine::new(0);
 
     loop {
-        sm.process_canbus_data(&mut can1, &mut can2);
+        sm.process_canbus_data(&mut dti_can, &mut sensor_can);
         
         if sm.brakelight {
             brk.set_high().unwrap();
@@ -122,7 +129,16 @@ fn main() -> ! {
             brk.set_low().unwrap();
         }
 
-        red_led.toggle().unwrap(); // To know the loop is running - It should stay constantly on
+        if sm.buzzer {
+            brk.set_high();
+        }else{
+            brk.set_low();
+        }
+
+        // if debug_timestamp.elapsed() > debug_timer.frequency().0 { // Light blinking every second
+        //     red_led.toggle().unwrap(); // To know the loop is running - It should be constant yellow
+        //     debug_timestamp = debug_timer.now();
+        // }
 
     }
 
@@ -130,50 +146,5 @@ fn main() -> ! {
 
 
 
-// Helper functions to talk to DTI Inverter
-fn send_canbus_dti<I1>(
-    dti_can: &mut FdCan<I1, NormalOperationMode>,
-    frame_data: [u8; 8],
-    packet_id: u16
-) -> () 
-    where
-        I1: Instance
-{
-    let id: u16 = (packet_id << 5) | DTI_NODE_ID; // format of DTI canbus messages
-    let frame_header = TxFrameHeader {
-        len: 8,
-        frame_format: FrameFormat::Standard,
-        id: Id::Standard(StandardId::new(id).unwrap()), // Insert DTI id here
-        bit_rate_switching: false,
-        marker: None,
-    };
-    dti_can.transmit(frame_header, &frame_data).unwrap();
-}
 
-// A cyclic message that should be sent every so often to keep the car in ready to drive mode
-fn drive_enable<I1>(dti_can: &mut FdCan<I1, NormalOperationMode>) 
-    where
-        I1: Instance
-{
-    let packet_id: u16 = 0x0C;
-    send_canbus_dti(dti_can, [1,0,0,0,0,0,0,0], packet_id);
-}
-
-// Sets the forward current draw to a certain percentage
-fn set_forward_current<I1>(dti_can: &mut FdCan<I1, NormalOperationMode>, current_percentage: u8)
-    where
-        I1: Instance
-{
-    let packet_id: u16 = 0x05;
-    send_canbus_dti(dti_can, [current_percentage,0,0,0,0,0,0,0], packet_id);
-}
-
-// Sets the braking force as a percentage
-fn set_regen<I1>(dti_can: &mut FdCan<I1, NormalOperationMode>, regen_percentage: u8)
-where
-    I1: Instance
-{
-    let packet_id: u16 = 0x06;
-    send_canbus_dti(dti_can, [regen_percentage,0,0,0,0,0,0,0], packet_id);
-}
 
