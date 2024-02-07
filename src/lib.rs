@@ -11,6 +11,10 @@ use stm32g4xx_hal as _;
 
 use panic_probe as _;
 
+pub mod statemachine;
+pub mod helpers;
+
+
 // same panicking *behavior* as `panic-probe` but doesn't print a panic message
 // this prevents the panic message being printed *twice* when `defmt::panic` is invoked
 #[defmt::panic_handler]
