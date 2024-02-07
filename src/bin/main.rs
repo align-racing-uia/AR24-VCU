@@ -23,8 +23,9 @@ use stm32g4xx_hal::{prelude, block};
 use stm32g4xx_hal::{stm32::Peripherals, rcc::{RccExt, Config}, gpio::GpioExt, hal::{digital::v2::ToggleableOutputPin}};
 use stm32g4xx_hal::time::U32Ext;
 
+use vcu_v2::inverter::Inverter;
 // Organizing
-use vcu_v2 as _; // global logger + panicking-behavior + memory layout
+use vcu_v2::{self as _, inverter}; // global logger + panicking-behavior + memory layout
 use vcu_v2::helpers;
 use vcu_v2::statemachine::StateMachine;
 
@@ -118,10 +119,15 @@ fn main() -> ! {
         can.into_normal()
     };
 
-    let mut sm = StateMachine::new(0);
+    let mut sm = StateMachine::new();
+    let mut inverter = Inverter::new(0);
 
     loop {
-        sm.process_canbus_data(&mut dti_can, &mut sensor_can);
+        sm.process_canbus_data(&mut dti_can);
+        sm.handle_logic();
+
+        inverter.process_canbus_data(&mut sensor_can);
+        inverter.handle_logic(&sm);
         
         if sm.brakelight {
             brk.set_high().unwrap();
@@ -135,10 +141,11 @@ fn main() -> ! {
             brk.set_low();
         }
 
-        // if debug_timestamp.elapsed() > debug_timer.frequency().0 { // Light blinking every second
-        //     red_led.toggle().unwrap(); // To know the loop is running - It should be constant yellow
-        //     debug_timestamp = debug_timer.now();
-        // }
+        if debug_timestamp.elapsed() > debug_timer.frequency().0 { // Light blinking every second
+            blue_led.toggle().unwrap(); // To know the loop is running
+            red_led.toggle().unwrap();
+            debug_timestamp = debug_timer.now();
+        }
 
     }
 

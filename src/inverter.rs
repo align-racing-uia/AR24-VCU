@@ -1,4 +1,7 @@
+use defmt::println;
 use fdcan::{frame::{FrameFormat, TxFrameHeader}, id::{Id, StandardId}, FdCan, Instance, NormalOperationMode};
+
+use crate::{helpers::id_to_u32, statemachine::StateMachine};
 
 pub struct Inverter {
     dti_node_id: u16,
@@ -16,6 +19,42 @@ impl Inverter {
             power: 0
         }
     }
+
+    pub fn handle_logic(&mut self, sm: &StateMachine){
+
+    }
+
+    pub fn process_canbus_data<I1>(&mut self, dti_can: &mut FdCan<I1, NormalOperationMode>)
+    where
+        I1: Instance
+    {
+        
+        let mut data = [0u8; 16];
+        match dti_can.receive0(&mut data) {
+            Ok(d) => {
+                let rx_frame = d.unwrap();  
+                println!("Can Frame: {}, {}", id_to_u32(rx_frame.id), &data);
+                self.process_data(id_to_u32(rx_frame.id), &data);
+            },
+            Err(_) => {}
+        }
+    
+        match dti_can.receive1(&mut data) {
+            Ok(d) => {
+                let rx_frame = d.unwrap();
+                self.process_data(id_to_u32(rx_frame.id), &data);
+            },
+            Err(_) => {}
+        }
+    }
+
+        // Inverter related stuff here
+        fn process_data(&mut self, id: u32, data: &[u8; 16])
+        {
+            match id {
+                _ => {} // Nothing here yet
+            }
+        }
 
     // Helper functions to talk to DTI Inverter
     fn send_canbus_dti<I1>(
@@ -36,6 +75,13 @@ impl Inverter {
             marker: None,
         };
         dti_can.transmit(frame_header, &frame_data).unwrap();
+    }
+
+    pub fn ping<I1>(&mut self, dti_can: &mut FdCan<I1, NormalOperationMode>)
+        where
+            I1: Instance
+    {
+        self.send_canbus_dti(dti_can, [1,2,3,4,5,6,7,8], 0);
     }
 
     // A cyclic message that should be sent every so often to keep the car in ready to drive mode
