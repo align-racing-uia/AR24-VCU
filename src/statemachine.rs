@@ -61,10 +61,7 @@ impl StateMachine
                 }
                 self.brake_prs_front = data[1];
             },
-            0x124 => { // <-- DTI Values
-
-            },
-            0x125 => { // <-- Cockpit
+            0x125 => { // <-- Dashboard
                 self.r2d_button = (0x1 & data[0]) != 0; // R2D button
                 if !self.r2d && self.brake_prs_front > 10 && self.wheel_speed < 5 && self.error_code == 0 {
                     self.r2d = true;
