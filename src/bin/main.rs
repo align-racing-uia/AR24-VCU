@@ -15,7 +15,7 @@ use fdcan::id::{StandardId, Id};
 use stm32g4xx_hal::can::CanExt;
 use stm32g4xx_hal::delay::SYSTDelayExt;
 use stm32g4xx_hal::gpio::{self, Speed, AF9};
-use stm32g4xx_hal::hal::digital::v2::OutputPin;
+use stm32g4xx_hal::hal::digital::v2::{InputPin, OutputPin};
 use stm32g4xx_hal::rcc::{PLLSrc, PllConfig, PllMDiv, PllNMul, PllPDiv, PllQDiv, PllRDiv, Prescaler, SysClockSrc};
 use stm32g4xx_hal::stm32::{FDCAN1, FDCAN2};
 use stm32g4xx_hal::timer::{MonoTimer, Timer};
@@ -65,7 +65,12 @@ fn main() -> ! {
 
     // Making a syst delay running on the system clock, on 170MHz
     let mut delay = Delay::new(cp.SYST, 170000000);
+
+
+    // Breaking out the direct I/O
     let mut brk = gpioc.pc13.into_push_pull_output();
+    let mut buz = gpioc.pc14.into_push_pull_output();
+    let mut _ext = gpioc.pc15.into_push_pull_output(); // This is currently unused
     
     println!("Initializing debug lights");
     // Debugging lights
@@ -73,8 +78,8 @@ fn main() -> ! {
     let mut red_led = gpiob.pb7.into_push_pull_output();
 
     // Debug timer
-    let mut debug_timer = MonoTimer::new(cp.DWT, cp.DCB, &rcc.clocks);
-    let mut debug_timestamp = debug_timer.now();
+    let mut mono_timer = MonoTimer::new(cp.DWT, cp.DCB, &rcc.clocks);
+    let mut debug_timestamp = mono_timer.now();
 
 
     // Initializing canbus1
@@ -121,13 +126,14 @@ fn main() -> ! {
 
     let mut sm = StateMachine::new();
     let mut inverter = Inverter::new(0);
+    let mut buzzer_timestamp = mono_timer.now();
 
     loop {
         sm.process_canbus_data(&mut dti_can);
-        sm.handle_logic();
+        sm.update();
 
         inverter.process_canbus_data(&mut sensor_can);
-        inverter.handle_logic(&sm);
+        inverter.update(&mut dti_can, &sm);
         
         if sm.brakelight {
             brk.set_high().unwrap();
@@ -135,16 +141,21 @@ fn main() -> ! {
             brk.set_low().unwrap();
         }
 
-        if sm.buzzer {
-            brk.set_high();
-        }else{
-            brk.set_low();
+        if sm.buzzer { // One shot
+            buz.set_high().unwrap();
+            buzzer_timestamp = mono_timer.now();
+            sm.buzzer = false;
         }
 
-        if debug_timestamp.elapsed() > debug_timer.frequency().0 { // Light blinking every second
+        // TODO: Make this more efficient. How expensive is buzzer_timestamp.elapsed?
+        if buzzer_timestamp.elapsed() > mono_timer.frequency().0 * 3 { // Buzzer on for 3 seconds
+            buz.set_low().unwrap();
+        }
+
+        if debug_timestamp.elapsed() > mono_timer.frequency().0 { // Light blinking at roughly 0.5 Hz
             blue_led.toggle().unwrap(); // To know the loop is running
             red_led.toggle().unwrap();
-            debug_timestamp = debug_timer.now();
+            debug_timestamp = mono_timer.now();
         }
 
     }

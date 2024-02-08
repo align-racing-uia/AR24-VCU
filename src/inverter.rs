@@ -20,8 +20,27 @@ impl Inverter {
         }
     }
 
-    pub fn handle_logic(&mut self, sm: &StateMachine){
+    pub fn update<I1>(&mut self, dti_can: &mut FdCan<I1, NormalOperationMode>, sm: &StateMachine)
+    where
+        I1: Instance
+    {
+        if sm.r2d {
+            self.drive_enable(dti_can);
+            if sm.throttle_pos > 5 && sm.brake_prs < 3{
+                self.set_power(dti_can, sm.throttle_pos);
+            }else if sm.throttle_pos <= 5 && sm.wheel_speed > 0 {
+                self.set_regen(dti_can, sm.regen_stage * 25 * ((5-sm.throttle_pos) / 5)) // Throttle based regeneration
+            }
+        }
 
+    }
+
+    // A function to catch all the canbus messages
+    fn process_data(&mut self, id: u32, data: &[u8; 16])
+    {
+        match id {
+            _ => {} // Nothing here yet
+        }
     }
 
     pub fn process_canbus_data<I1>(&mut self, dti_can: &mut FdCan<I1, NormalOperationMode>)
@@ -48,13 +67,7 @@ impl Inverter {
         }
     }
 
-        // Inverter related stuff here
-        fn process_data(&mut self, id: u32, data: &[u8; 16])
-        {
-            match id {
-                _ => {} // Nothing here yet
-            }
-        }
+        
 
     // Helper functions to talk to DTI Inverter
     fn send_canbus_dti<I1>(
@@ -75,13 +88,6 @@ impl Inverter {
             marker: None,
         };
         dti_can.transmit(frame_header, &frame_data).unwrap();
-    }
-
-    pub fn ping<I1>(&mut self, dti_can: &mut FdCan<I1, NormalOperationMode>)
-        where
-            I1: Instance
-    {
-        self.send_canbus_dti(dti_can, [1,2,3,4,5,6,7,8], 0);
     }
 
     // A cyclic message that should be sent every so often to keep the car in ready to drive mode
