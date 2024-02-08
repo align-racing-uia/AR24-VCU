@@ -5,8 +5,8 @@ use crate::{helpers::id_to_u32, statemachine::StateMachine};
 
 pub struct Inverter {
     dti_node_id: u16,
-    regen: u8,
-    power: u8
+    pub regen: u8,
+    pub power: u8
     
 }
 
@@ -26,10 +26,16 @@ impl Inverter {
     {
         if sm.r2d {
             self.drive_enable(dti_can);
-            if sm.throttle_pos > 5 && sm.brake_prs < 3{
-                self.set_power(dti_can, sm.throttle_pos);
+            if sm.throttle_pos > 5 && sm.brake_prs_front < 3{
+                self.power = sm.throttle_pos;
+                self.regen = 0;
+                self.set_power(dti_can, self.power);
+                self.set_regen(dti_can, self.regen);
             }else if sm.throttle_pos <= 5 && sm.wheel_speed > 0 {
-                self.set_regen(dti_can, sm.regen_stage * 25 * ((5-sm.throttle_pos) / 5)) // Throttle based regeneration
+                self.power = 0;
+                self.regen = sm.regen_stage * 25 * ((5-sm.throttle_pos) / 5);
+                self.set_power(dti_can, self.power);
+                self.set_regen(dti_can, self.regen); // Throttle based regeneration
             }
         }
 

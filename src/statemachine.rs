@@ -1,12 +1,12 @@
 
 use fdcan::{FdCan, Instance, NormalOperationMode};
-use crate::{helpers::id_to_u32, inverter::Inverter};
-use defmt::println;
+use crate::helpers::id_to_u32;
 
 pub struct StateMachine
 {
     pub throttle_pos: u8,
-    pub brake_prs: u8,
+    pub brake_prs_front: u8,
+    pub brake_prs_rear: u8,
     pub r2d: bool,
     pub brakelight: bool,
     pub buzzer: bool,
@@ -23,7 +23,8 @@ impl StateMachine
     {
         StateMachine {
             throttle_pos: 0,
-            brake_prs: 0,
+            brake_prs_front: 0,
+            brake_prs_rear: 0,
             r2d: false,
             brakelight: false,
             buzzer: false,
@@ -34,8 +35,19 @@ impl StateMachine
         }
     }
 
+    // A function to handle the logic of the car
     pub fn update(&mut self){
-        // A function to handle the logic of the car
+        
+        if self.r2d && self.brake_prs_front > 10 && self.throttle_pos > 5 {
+            self.r2d = false;
+        }
+
+        if self.brake_prs_front > 3 {
+            self.brakelight = true;
+        }else{
+            self.brakelight = false;
+        }
+
     }
 
     // Put all the canbus data here
@@ -44,16 +56,17 @@ impl StateMachine
         match id {
             0x123 => { // <-- APPS values
                 self.throttle_pos = data[0];
-                if self.throttle_pos > 101 {
+                if self.throttle_pos > 101 { // Negative numbers will overflow
                     self.throttle_pos = 0;
                 }
+                self.brake_prs_front = data[1];
             },
             0x124 => { // <-- DTI Values
 
             },
             0x125 => { // <-- Cockpit
                 self.r2d_button = (0x1 & data[0]) != 0; // R2D button
-                if !self.r2d && self.brake_prs > 10 && self.wheel_speed < 5 && self.error_code == 0 {
+                if !self.r2d && self.brake_prs_front > 10 && self.wheel_speed < 5 && self.error_code == 0 {
                     self.r2d = true;
                     self.buzzer = true;
                 }

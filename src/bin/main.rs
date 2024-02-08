@@ -1,32 +1,27 @@
 #![no_main]
 #![no_std]
 
-use core::fmt::Debug;
 use core::num::{NonZeroU16, NonZeroU8};
 
 use cortex_m::delay::Delay;
-use cortex_m_semihosting::debug;
-use defmt::{info, println};
+use defmt::println;
+use fdcan::frame::{FrameFormat, TxFrameHeader};
+use fdcan::id::{Id, StandardId};
 use fdcan::{NormalOperationMode, FdCan, Instance};
 use fdcan::config::NominalBitTiming;
 use fdcan::filter::{StandardFilter, StandardFilterSlot};
-use fdcan::frame::{TxFrameHeader, FrameFormat, RxFrameInfo};
-use fdcan::id::{StandardId, Id};
 use stm32g4xx_hal::can::CanExt;
-use stm32g4xx_hal::delay::SYSTDelayExt;
-use stm32g4xx_hal::gpio::{self, Speed, AF9};
-use stm32g4xx_hal::hal::digital::v2::{InputPin, OutputPin};
+use stm32g4xx_hal::gpio::Speed;
+use stm32g4xx_hal::hal::digital::v2::{OutputPin, ToggleableOutputPin};
 use stm32g4xx_hal::rcc::{PLLSrc, PllConfig, PllMDiv, PllNMul, PllPDiv, PllQDiv, PllRDiv, Prescaler, SysClockSrc};
-use stm32g4xx_hal::stm32::{FDCAN1, FDCAN2};
-use stm32g4xx_hal::timer::{MonoTimer, Timer};
-use stm32g4xx_hal::{prelude, block};
-use stm32g4xx_hal::{stm32::Peripherals, rcc::{RccExt, Config}, gpio::GpioExt, hal::{digital::v2::ToggleableOutputPin}};
+use stm32g4xx_hal::stm32::FDCAN2;
+use stm32g4xx_hal::timer::MonoTimer;
+use stm32g4xx_hal::{stm32::Peripherals, rcc::{RccExt, Config}, gpio::GpioExt};
 use stm32g4xx_hal::time::U32Ext;
 
-use vcu_v2::inverter::Inverter;
+use vcu_v2::inverter::{self, Inverter};
 // Organizing
-use vcu_v2::{self as _, inverter}; // global logger + panicking-behavior + memory layout
-use vcu_v2::helpers;
+use vcu_v2 as _; // global logger + panicking-behavior + memory layout
 use vcu_v2::statemachine::StateMachine;
 
 
@@ -64,7 +59,7 @@ fn main() -> ! {
 
 
     // Making a syst delay running on the system clock, on 170MHz
-    let mut delay = Delay::new(cp.SYST, 170000000);
+    let _delay = Delay::new(cp.SYST, 170000000);
 
 
     // Breaking out the direct I/O
@@ -78,7 +73,7 @@ fn main() -> ! {
     let mut red_led = gpiob.pb7.into_push_pull_output();
 
     // Debug timer
-    let mut mono_timer = MonoTimer::new(cp.DWT, cp.DCB, &rcc.clocks);
+    let mono_timer = MonoTimer::new(cp.DWT, cp.DCB, &rcc.clocks);
     let mut debug_timestamp = mono_timer.now();
 
 
@@ -129,10 +124,10 @@ fn main() -> ! {
     let mut buzzer_timestamp = mono_timer.now();
 
     loop {
-        sm.process_canbus_data(&mut dti_can);
+        sm.process_canbus_data(&mut sensor_can);
         sm.update();
 
-        inverter.process_canbus_data(&mut sensor_can);
+        inverter.process_canbus_data(&mut dti_can);
         inverter.update(&mut dti_can, &sm);
         
         if sm.brakelight {
@@ -152,7 +147,8 @@ fn main() -> ! {
             buz.set_low().unwrap();
         }
 
-        if debug_timestamp.elapsed() > mono_timer.frequency().0 { // Light blinking at roughly 0.5 Hz
+        if debug_timestamp.elapsed() > mono_timer.frequency().0 / 2 { // Sending message at roughly 1Hz
+            broadcast_message(&mut sensor_can, &sm, &inverter);
             blue_led.toggle().unwrap(); // To know the loop is running
             red_led.toggle().unwrap();
             debug_timestamp = mono_timer.now();
@@ -162,7 +158,18 @@ fn main() -> ! {
 
 }
 
-
-
-
-
+fn broadcast_message<I1>(sensor_can: &mut FdCan<I1, NormalOperationMode>, sm: &StateMachine, inverter: &Inverter)
+    where
+        I1: Instance
+{
+    let frame_data = [sm.brake_prs_front, sm.brake_prs_rear, sm.throttle_pos, sm.r2d as u8,
+                                    inverter.power, inverter.regen, 0, 0];
+    let frame_header = TxFrameHeader {
+        len: 8,
+        frame_format: FrameFormat::Standard,
+        id: Id::Standard(StandardId::new(0x234).unwrap()), // Insert VCUs CAN ID here
+        bit_rate_switching: false,
+        marker: None,
+    };
+    sensor_can.transmit(frame_header, &frame_data).unwrap();  
+}
