@@ -39,7 +39,7 @@ impl StateMachine
     pub fn update(&mut self){
         
         if self.r2d && self.brake_prs_front > 10 && self.throttle_pos > 5 {
-            self.r2d = false;
+            self.throttle_pos = 0;
         }
 
         if self.brake_prs_front > 3 {
