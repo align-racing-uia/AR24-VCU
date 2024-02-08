@@ -122,4 +122,24 @@ impl Inverter {
         let packet_id: u16 = 0x06;
         self.send_canbus_dti(dti_can, [regen_percentage,0,0,0,0,0,0,0], packet_id);
     }
+
+    // TODO Manipulate the digital outputs
+    pub fn set_digital_out<I1>(&mut self, dti_can: &mut FdCan<I1, NormalOperationMode>, output_states: u8)
+        where
+            I1: Instance
+    {
+        let packet_id: u16 = 0x07;
+        self.send_canbus_dti(dti_can, [output_states,0,0,0,0,0,0,0], packet_id);
+    }
+
+    // Sets the current motor speed
+    pub fn set_erpm<I1>(&mut self, dti_can: &mut FdCan<I1, NormalOperationMode>, motor_rpm: i32)
+        where
+            I1: Instance
+    {
+        let packet_id: u16 = 0x03;
+        self.send_canbus_dti(dti_can, [(motor_rpm >> 24) as u8,(motor_rpm >> 16) as u8,(motor_rpm >> 8) as u8, motor_rpm as u8,0,0,0,0], packet_id);
+    }
+
+
 }
