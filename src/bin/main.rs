@@ -148,7 +148,7 @@ fn main() -> ! {
         }
 
         if debug_timestamp.elapsed() > mono_timer.frequency().0 / 2 { // Sending message at roughly 1Hz
-            broadcast_message(&mut sensor_can, &sm, &inverter);
+            broadcast_message(&mut dti_can, &sm, &inverter);
             blue_led.toggle().unwrap(); // To know the loop is running
             red_led.toggle().unwrap();
             debug_timestamp = mono_timer.now();

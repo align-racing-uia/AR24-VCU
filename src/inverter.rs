@@ -6,7 +6,8 @@ use crate::{helpers::id_to_u32, statemachine::StateMachine};
 pub struct Inverter {
     dti_node_id: u16,
     pub regen: u8,
-    pub power: u8
+    pub power: u8,
+    pub debug: bool
     
 }
 
@@ -16,7 +17,8 @@ impl Inverter {
         Inverter {
             dti_node_id,
             regen: 0,
-            power: 0
+            power: 0,
+            debug: false,
         }
     }
 
@@ -24,6 +26,10 @@ impl Inverter {
     where
         I1: Instance
     {
+        if self.debug {
+            self.debug_message(dti_can);
+        }
+
         if sm.r2d {
             self.drive_enable(dti_can);
             if sm.throttle_pos > 5 && sm.brake_prs_front < 3{
@@ -45,7 +51,12 @@ impl Inverter {
     fn process_data(&mut self, id: u32, data: &[u8; 16])
     {
         match id {
-            _ => {} // Nothing here yet
+            0x123 => { // Find fitting unused ID to use as debug switch.
+                self.debug = !self.debug;
+            },
+            _ => {
+
+            } // Nothing here yet
         }
     }
 
@@ -94,6 +105,14 @@ impl Inverter {
             marker: None,
         };
         dti_can.transmit(frame_header, &frame_data).unwrap();
+    }
+
+    pub fn debug_message<I1>(&mut self, dti_can: &mut FdCan<I1, NormalOperationMode>) 
+        where
+            I1: Instance
+    {
+        let packet_id: u16 = 0x1F; //TODO find valid ID
+        self.send_canbus_dti(dti_can, [0,0,0,0,0,0,0,0], packet_id);
     }
 
     // A cyclic message that should be sent every so often to keep the car in ready to drive mode

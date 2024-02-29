@@ -13,7 +13,8 @@ pub struct StateMachine
     pub regen_stage: u8,
     pub wheel_speed: u8,
     r2d_button: bool,
-    error_code: u8
+    error_code: u8,
+    debug: bool
 }
 
 // The cars state machine
@@ -32,12 +33,18 @@ impl StateMachine
             wheel_speed: 0,
             regen_stage: 0,
             error_code: 0,
+            debug: false
         }
     }
 
     // A function to handle the logic of the car
     pub fn update(&mut self){
-        
+
+        if !self.debug { // This will be overwritten
+            self.buzzer = false;
+            self.brakelight = false;
+        }
+                
         if self.r2d && self.brake_prs_front > 10 && self.throttle_pos > 5 {
             self.throttle_pos = 0;
         }
@@ -46,6 +53,11 @@ impl StateMachine
             self.brakelight = true;
         }else{
             self.brakelight = false;
+        }
+
+        if self.debug { // This overwrites
+            self.buzzer = true;
+            self.brakelight = true;
         }
 
     }
