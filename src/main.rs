@@ -4,6 +4,7 @@
 mod fmt;
 
 use cortex_m::Peripherals;
+use embassy_sync::{blocking_mutex::raw::{NoopRawMutex, ThreadModeRawMutex}, mutex::Mutex};
 #[cfg(not(feature = "defmt"))]
 use panic_halt as _;
 #[cfg(feature = "defmt")]
@@ -24,29 +25,26 @@ bind_interrupts!(struct Irqs2 {
     FDCAN2_IT1 => can::IT1InterruptHandler<FDCAN2>;
 });
 
-async fn read_dti_can<T>(can: &mut Can<'_,T>) 
-    where
-        T: Instance
+struct Inverter {
+    node_id: u8,
+    
+}
+
+struct APPS {
+    throttle: u8,
+    brake_pressure: u8,
+
+}
+
+async fn send_command<T>(can: &mut Can<'_, T>)
+where
+    T: Instance
 {
-    match can.read().await {
-        Ok(envelope) => {
-            let frame = envelope.frame;
-            let id = {
-                match frame.id() {
-                    embedded_can::Id::Standard(id) => id.as_raw() as u32,
-                    embedded_can::Id::Extended(id) => id.as_raw(),
-                }
-            };
-            info!("Timestamp: {}ms, Frame id: 0x{:X}, data: {}", envelope.ts.as_millis(), id, frame.data());
-        },
-        Err(_) => {
-            info!("Oh no")
-        }
-    }
+
 }
 
 #[embassy_executor::main]
-async fn main(_spawner: Spawner) {
+async fn main(spawner: Spawner) {
 
     let mut config: Config = Default::default();
     { // Setting clock timings
@@ -66,7 +64,7 @@ async fn main(_spawner: Spawner) {
         config.rcc.hsi48 = Some(Hsi48Config {sync_from_usb: false});
         config.rcc.pll = Some(pll);
         config.rcc.sys = Sysclk::PLL1_R;
-        config.rcc.ls = LsConfig { rtc: RtcClockSource::LSI, lsi: true, lse: None };
+        // config.rcc.ls = LsConfig { rtc: RtcClockSource::LSI, lsi: true, lse: None };
             
         // Clock for ADC
         config.rcc.mux.adc12sel = mux::Adcsel::SYS;
@@ -78,7 +76,7 @@ async fn main(_spawner: Spawner) {
     let p: embassy_stm32::Peripherals = embassy_stm32::init(config);
     
     
-    let mut dti_can = {
+    let mut can2 = {
         let mut can = can::CanConfigurator::new(p.FDCAN2, p.PB5, p.PB6, Irqs2);
         can.properties().set_extended_filter(ExtendedFilterSlot::_0, ExtendedFilter::accept_all_into_fifo0());
         can.properties().set_extended_filter(ExtendedFilterSlot::_1, ExtendedFilter::accept_all_into_fifo1());
@@ -88,12 +86,27 @@ async fn main(_spawner: Spawner) {
         can.into_normal_mode()
     
     };
-
     let mut led = Output::new(p.PB9, Level::High, Speed::Low);
-    
 
     loop {
-        read_dti_can(&mut dti_can).await;
-        Timer::after_millis(10);
+        match can2.read().await {
+            Ok(envelope) => {
+                let frame = envelope.frame;
+                let id = {
+                    match frame.id() {
+                        embedded_can::Id::Standard(id) => id.as_raw() as u32,
+                        embedded_can::Id::Extended(id) => id.as_raw(),
+                    }
+                };
+                info!("Timestamp: {}ms, Frame id: 0x{:X}, data: {}", envelope.ts.as_millis(), id, frame.data());
+            },
+            Err(_) => {
+                info!("Oh no")
+            }
+        }
+
+        
+        can2.write()
+        
     }
 }
