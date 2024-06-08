@@ -3,8 +3,7 @@
 
 mod fmt;
 
-use cortex_m::Peripherals;
-use embassy_sync::{blocking_mutex::{raw::{NoopRawMutex, ThreadModeRawMutex}, ThreadModeMutex}, mutex::Mutex};
+use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, mutex::Mutex};
 #[cfg(not(feature = "defmt"))]
 use panic_halt as _;
 #[cfg(feature = "defmt")]
@@ -87,12 +86,11 @@ impl APPS {
 
 struct VCU {
     ready_to_drive: bool,
-    error_code: u8,
 }
 
 impl VCU {
     const fn new() -> VCU {
-        VCU { ready_to_drive: false, error_code: 0 }
+        VCU { ready_to_drive: false }
     }
 }
 
@@ -276,8 +274,8 @@ async fn main(spawner: Spawner) {
     let p: embassy_stm32::Peripherals = embassy_stm32::init(config);
     
     let mut brakelight = Output::new(p.PC13, Level::Low, Speed::Low);
-    let mut buzzer = Output::new(p.PC14, Level::Low, Speed::Low);
-    let mut extra = Output::new(p.PC15, Level::Low, Speed::Low);
+    let mut _buzzer = Output::new(p.PC14, Level::Low, Speed::Low);
+    let mut _extra = Output::new(p.PC15, Level::Low, Speed::Low);
     
     let can2 = {
         let mut can = can::CanConfigurator::new(p.FDCAN2, p.PB5, p.PB6, Irqs2);
@@ -292,13 +290,13 @@ async fn main(spawner: Spawner) {
     spawner.spawn(blinker(led)).unwrap();
 
     
-    let (mut can2_tx, mut can2_rx, mut _can2_properties) = can2.split();
+    let (mut can2_tx, can2_rx, mut _can2_properties) = can2.split();
 
     spawner.spawn(read_drive_can(can2_rx)).unwrap();
 
     let mut command_timestamp = Instant::now();
     let mut broadcast_timestamp = Instant::now(); 
-    let mut r2d_timestamp = Instant::now();
+    let mut _buzzer_timestamp = Instant::now();
 
     loop {
         
@@ -306,27 +304,15 @@ async fn main(spawner: Spawner) {
         let brake_pressure: u8; let throttle: u8; let plausability: bool;
         { // Control brakelight
             let apps = MUT_APPS.lock().await;
-            if apps.brake_pressure1 > 3 {
-                brakelight.set_high();
-            }else{
-                brakelight.set_low();
-            }
             brake_pressure = apps.brake_pressure1; // As of now we only care about 1 brake sensor
             throttle = apps.throttle;
             plausability = apps.plausability;
         }
 
         // Inverter section
-        let dc_voltage: u16; let dc_current: u16; let ac_current: u16;
-        let inverter_temp: u16; let motor_temp: u16; let erpm: u32; let fault_code: u8;
+        let fault_code: u8;
         {
             let inverter = MUT_INVERTER.lock().await;
-            dc_voltage = inverter.dc_voltage;
-            dc_current = inverter.dc_current;
-            ac_current = inverter.ac_current;
-            inverter_temp = inverter.inverter_temp;
-            motor_temp = inverter.motor_temp;
-            erpm = inverter.erpm;
             fault_code = inverter.fault_code;
 
         }
@@ -341,7 +327,7 @@ async fn main(spawner: Spawner) {
         }
 
         // Modify internal logic TODO: Buzzer
-        let ready_to_drive: bool; let buzzer: bool;
+        let ready_to_drive: bool;
         {
             let mut vcu = MUT_VCU.lock().await;
             if r2d_toggled && r2d && brake_pressure < 4 && fault_code == 0 {
@@ -355,9 +341,10 @@ async fn main(spawner: Spawner) {
 
         }
 
-        {   // Todo buzzer logic
-            
-
+        if brake_pressure > 3 {
+            brakelight.set_high();
+        }else{
+            brakelight.set_low();
         }
 
         if command_timestamp.elapsed().as_millis() >= 20 {
