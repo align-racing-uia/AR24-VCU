@@ -52,6 +52,7 @@ struct Inverter {
     motor_temp: u16,
     drive_enable_feedback: bool,
     fault_code: u8,
+    watchdog: Instant,
 
 }
 
@@ -67,6 +68,7 @@ impl Inverter {
             motor_temp: 0,
             drive_enable_feedback: false,
             fault_code: 0,
+            watchdog: Instant::MIN,
         }
     }
 }
@@ -76,11 +78,12 @@ struct APPS {
     brake_pressure1: u8,
     brake_pressure2: u8,
     plausability: bool,
+    watchdog: Instant
 }
 
 impl APPS {
     const fn new() -> APPS {
-        APPS { throttle: 0, brake_pressure1: 0, brake_pressure2: 0, plausability: false }
+        APPS { throttle: 0, brake_pressure1: 0, brake_pressure2: 0, plausability: false, watchdog: Instant::MIN }
     }
 }
 
@@ -97,11 +100,12 @@ impl VCU {
 struct DriverInterface {
     r2d: bool,
     r2d_toggled: bool,
+    watchdog: Instant
 }
 
 impl DriverInterface {
     const fn new() -> DriverInterface {
-        DriverInterface { r2d: false, r2d_toggled: false }
+        DriverInterface { r2d: false, r2d_toggled: false, watchdog: Instant::MIN }
     }
 }
 
@@ -192,6 +196,7 @@ async fn read_drive_can(mut can: CanRx<'static, FDCAN2>)
                                 info!("Unknown packet from inverter!")
                             }
                         }
+                        inverter.watchdog = Instant::now();
                     },
                     0x0A => {
                         let mut apps = MUT_APPS.lock().await;
@@ -204,6 +209,7 @@ async fn read_drive_can(mut can: CanRx<'static, FDCAN2>)
                             }
                             _ => {}
                         }
+                        apps.watchdog = Instant::now();
                     },
                     0x0E => {
                         let mut driver_interface = MUT_DRIVER_INTERFACE.lock().await;
@@ -219,6 +225,7 @@ async fn read_drive_can(mut can: CanRx<'static, FDCAN2>)
                             },
                             _ => {}
                         }
+                        driver_interface.watchdog = Instant::now();
                     },
                     _ => {
                         info!("Unknown sender! Checking against compatible basic IDs");
@@ -299,7 +306,8 @@ async fn main(spawner: Spawner) {
     let mut _buzzer_timestamp = Instant::now();
 
     loop {
-        
+        let mut timeout = false;
+
         // APPS Section
         let brake_pressure: u8; let throttle: u8; let plausability: bool;
         { // Control brakelight
@@ -307,6 +315,7 @@ async fn main(spawner: Spawner) {
             brake_pressure = apps.brake_pressure1; // As of now we only care about 1 brake sensor
             throttle = apps.throttle;
             plausability = apps.plausability;
+            timeout = timeout || apps.watchdog.elapsed().as_millis() > 100;
         }
 
         // Inverter section
@@ -314,6 +323,7 @@ async fn main(spawner: Spawner) {
         {
             let inverter = MUT_INVERTER.lock().await;
             fault_code = inverter.fault_code;
+            timeout = timeout || inverter.watchdog.elapsed().as_millis() > 100;
 
         }
 
@@ -323,6 +333,7 @@ async fn main(spawner: Spawner) {
             let interface = MUT_DRIVER_INTERFACE.lock().await;
             r2d = interface.r2d;
             r2d_toggled = interface.r2d_toggled;
+            timeout = timeout || interface.watchdog.elapsed().as_millis() > 100;
 
         }
 
@@ -330,11 +341,11 @@ async fn main(spawner: Spawner) {
         let ready_to_drive: bool;
         {
             let mut vcu = MUT_VCU.lock().await;
-            if r2d_toggled && r2d && brake_pressure < 4 && fault_code == 0 {
+            if r2d_toggled && r2d && brake_pressure < 4 && fault_code == 0 && !timeout {
                 vcu.ready_to_drive = true;
                 
             }
-            if !r2d || fault_code > 0 {
+            if !r2d || fault_code > 0 || timeout {
                 vcu.ready_to_drive = false;
             }
             ready_to_drive = vcu.ready_to_drive;
@@ -365,6 +376,7 @@ async fn main(spawner: Spawner) {
             data[1] = brake_pressure;
             data[2] = plausability as u8;
             data[3] = ready_to_drive as u8;
+            data[4] = timeout as u8;
 
             let frame = frame::Frame::new_extended(BRAODCAST_ID, &data).unwrap();
             can2_tx.write(&frame).await;
