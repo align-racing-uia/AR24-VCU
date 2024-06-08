@@ -1,69 +1,61 @@
+# This file was automatically generated.
+
 [package]
-# TODO(1) fix `authors` and `name` if you didn't use `cargo-generate`
-authors = ["hrrs01 <haavard.hn@gmail.com>"]
-name = "vcu-v2"
 edition = "2021"
+name = "AR24-VCU"
 version = "0.1.0"
 
-[lib]
-harness = false
-
-# needed for each integration test
-[[test]]
-name = "integration"
-harness = false
-
 [dependencies]
-cortex-m = { version = "0.7", features = ["critical-section-single-core"] }
-cortex-m-rt = "0.7"
-defmt = "0.3"
-defmt-rtt = "0.4"
-panic-probe = { version = "0.3", features = ["print-defmt"] }
-cortex-m-semihosting = "0.5.0"
-stm32g4xx-hal = {version = "0.0.1", features = ["stm32g473", "defmt"]}
-fugit = "0.3.7"
-fdcan = {version="0.1.2"}
-can-bit-timings = "1.1.0"
-heapless = "0.8.0"
+cortex-m = { version = "0.7.7", features = ["inline-asm", "critical-section-single-core"] }
+cortex-m-rt = "0.7.3"
+defmt = { version = "0.3.8", optional = true }
+defmt-rtt = { version = "0.4.1", optional = true }
+embassy-executor = { version = "*", features = ["arch-cortex-m", "executor-thread", "integrated-timers"] }
+embassy-stm32 = { version = "0.1.0", features = ["memory-x", "rt", "defmt", "stm32g473cb", "time-driver-any", "exti", "unstable-pac"] }
+embassy-futures = "0.1.1"
+embassy-sync = "0.5.0"
+embassy-time = { version = "*", features = ["tick-hz-32_000"] }
+panic-halt = "0.2.0"
+panic-probe = { version = "0.3.2", features = ["print-defmt"], optional = true }
+embedded-can = "*"
 
-[dev-dependencies]
-defmt-test = "0.3"
+[[bin]]
+name = "AR24-VCU"
+test = false
+bench = false
 
-# cargo build/run
+[patch.crates-io]
+embassy-stm32 = {git = "https://github.com/embassy-rs/embassy", rev = "000b022ae2e52e9abaabbd10110b4c583fe4344c"}
+embassy-time = {git = "https://github.com/embassy-rs/embassy", rev = "000b022ae2e52e9abaabbd10110b4c583fe4344c"}
+embassy-executor = {git = "https://github.com/embassy-rs/embassy", rev = "000b022ae2e52e9abaabbd10110b4c583fe4344c"}
+embassy-futures = {git = "https://github.com/embassy-rs/embassy", rev = "000b022ae2e52e9abaabbd10110b4c583fe4344c"}
+embassy-sync = {git = "https://github.com/embassy-rs/embassy", rev = "000b022ae2e52e9abaabbd10110b4c583fe4344c"}
+
 [profile.dev]
-codegen-units = 1
-debug = 2
-debug-assertions = true # <-
-incremental = false
-opt-level = 'z'         # <-
-overflow-checks = true  # <-
+debug = true
+lto = true
+opt-level = "z"
+incremental = true
 
-# cargo test
-[profile.test]
-codegen-units = 1
-debug = 2
-debug-assertions = true # <-
-incremental = false
-opt-level = 3           # <-
-overflow-checks = true  # <-
-
-# cargo build/run --release
 [profile.release]
-codegen-units = 1
-debug = 2
-debug-assertions = false # <-
-incremental = false
-lto = 'fat'
-opt-level = 3            # <-
-overflow-checks = false  # <-
+debug = false
+lto = true
+opt-level = "z"
+incremental = true
 
-# cargo test --release
-[profile.bench]
-codegen-units = 1
-debug = 2
-debug-assertions = false # <-
-incremental = false
-lto = 'fat'
-opt-level = 3            # <-
-overflow-checks = false  # <-
-
+[features]
+defmt = ["dep:defmt"]
+defmt-rtt = ["dep:defmt-rtt"]
+panic-probe = ["dep:panic-probe"]
+default = ["debug"]
+debug = [
+    "defmt",
+    "defmt-rtt",
+    "panic-probe",
+    "embassy-executor/defmt",
+    "embassy-sync/defmt",
+    "embassy-futures/defmt",
+    "embassy-time/defmt",
+    "embassy-time/defmt-timestamp-uptime",
+    "embassy-stm32/defmt",
+]
