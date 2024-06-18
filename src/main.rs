@@ -3,6 +3,8 @@
 
 mod fmt;
 
+use core::ptr;
+
 use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, mutex::Mutex};
 #[cfg(not(feature = "defmt"))]
 use panic_halt as _;
@@ -10,7 +12,7 @@ use panic_halt as _;
 use {defmt_rtt as _, panic_probe as _};
 
 use embassy_executor::Spawner;
-use embassy_stm32::{adc, bind_interrupts, can::{self, filter::{ExtendedFilter, ExtendedFilterSlot, Filter, StandardFilter, StandardFilterSlot}, frame, BufferedCan, Can, CanRx, CanTx, Instance, RxBuf, TxBuf}, exti, gpio::{AnyPin, Level, Output, Pin, Speed}, peripherals::{FDCAN1, FDCAN2}, time::mhz, Config, Peripheral};
+use embassy_stm32::{adc, bind_interrupts, can::{self, filter::{ExtendedFilter, ExtendedFilterSlot, Filter, StandardFilter, StandardFilterSlot}, frame, BufferedCan, Can, CanRx, CanTx, Instance, RxBuf, TxBuf}, dma::Priority, exti, gpio::{AnyPin, Input, Level, Output, Pin, Pull, Speed}, peripherals::{FDCAN1, FDCAN2}, time::mhz, Config, Peripheral};
 use embassy_time::{Instant, Timer};
 use fmt::info;
 
@@ -89,11 +91,13 @@ impl APPS {
 
 struct VCU {
     ready_to_drive: bool,
+    buzzer: bool,
+    brakelight: bool,
 }
 
 impl VCU {
     const fn new() -> VCU {
-        VCU { ready_to_drive: false }
+        VCU { ready_to_drive: false, buzzer: false, brakelight: false }
     }
 }
 
@@ -109,16 +113,16 @@ impl DriverInterface {
     }
 }
 
-async fn drive_command<T>(command: InverterCommand, can: &mut CanTx<'_, T>)
+async fn drive_command<T>(command: InverterCommand, can: &mut CanTx<'_, T>, command_data: &mut [u32; 8])
 where
     T: Instance
 {
     match command {
         InverterCommand::SetCurrent => {
-            let apps = MUT_APPS.lock().await;
+            //let apps = MUT_APPS.lock().await;
             let mut data = [0u8; 8];
-            let mut current = MAX_CURRENT * apps.throttle as u16 / 100;
-            if apps.throttle < 5 { // Safety limit
+            let mut current = 10 * MAX_CURRENT * command_data[0] as u16 / 100;
+            if command_data[0] < 5 { // Safety limit
                 current = 0;
             }
             data[1] = current as u8;
@@ -130,9 +134,8 @@ where
         InverterCommand::SetPosition => {},
         InverterCommand::SetRelativeCurrent => {},
         InverterCommand::SetDriveEnable => {
-            let vcu = MUT_VCU.lock().await;
             let mut data = [0u8; 8];
-            data[0] += vcu.ready_to_drive as u8;
+            data[0] += command_data[0] as u8;
             send_can_packet(can, 0x0C, INVERTER_NODE_ID, &data).await;
         },
     }
@@ -184,7 +187,7 @@ async fn read_drive_can(mut can: CanRx<'static, FDCAN2>)
                             0x22 => {
                                 inverter.inverter_temp = (data[1] as u16) | (data[0] as u16) << 8;
                                 inverter.motor_temp    = (data[3] as u16) | (data[2] as u16) << 8;
-                                inverter.fault_code    = data[5];
+                                inverter.fault_code    = data[4];
                             },
                             0x23 => {
                                 // No relevant messages
@@ -193,7 +196,7 @@ async fn read_drive_can(mut can: CanRx<'static, FDCAN2>)
                                 inverter.drive_enable_feedback = (data[4] >> 7) != 0;
                             },
                             _ => {
-                                info!("Unknown packet from inverter!")
+                                //info!("Unknown packet from inverter!")
                             }
                         }
                         inverter.watchdog = Instant::now();
@@ -215,12 +218,15 @@ async fn read_drive_can(mut can: CanRx<'static, FDCAN2>)
                         let mut driver_interface = MUT_DRIVER_INTERFACE.lock().await;
                         match packet_id {  
                             0x20 => {
-                                let r2d = data[0] != 0;
+                                let r2d = ( data[0] & 0x01 ) > 0 ;
+                                
                                 if r2d != driver_interface.r2d && r2d {
+                                    
                                     driver_interface.r2d_toggled = true;
                                 }else {
                                     driver_interface.r2d_toggled = false; // This might be too aggressive
                                 }
+                                //info!("R2D Read: {}, R2D_Toggle: {}", r2d, driver_interface.r2d_toggled);
                                 driver_interface.r2d = r2d;
                             },
                             _ => {}
@@ -228,14 +234,15 @@ async fn read_drive_can(mut can: CanRx<'static, FDCAN2>)
                         driver_interface.watchdog = Instant::now();
                     },
                     _ => {
-                        info!("Unknown sender! Checking against compatible basic IDs");
+                        //info!("Unknown sender! Checking against compatible basic IDs");
                     }
                 }
             },
             Err(_) => {
-                info!("Oh no")
+                //info!("Oh no")
             }
         }
+        Timer::after_micros(20).await;
     }
 
 }
@@ -267,22 +274,26 @@ async fn main(spawner: Spawner) {
             mode: HseMode::Oscillator
         });
         config.rcc.hsi48 = Some(Hsi48Config {sync_from_usb: false});
+        config.rcc.ls = LsConfig { rtc: RtcClockSource::LSI, lsi: true, lse: None };        
         config.rcc.pll = Some(pll);
         config.rcc.sys = Sysclk::PLL1_R;
-        // config.rcc.ls = LsConfig { rtc: RtcClockSource::LSI, lsi: true, lse: None };
+        config.rcc.low_power_run = false;
             
         // Clock for ADC
         config.rcc.mux.adc12sel = mux::Adcsel::SYS;
         config.rcc.mux.adc345sel = mux::Adcsel::SYS;
         // Clock for CANBUS
-        config.rcc.mux.fdcansel = mux::Fdcansel::PLL1_Q;
+        config.rcc.mux.fdcansel = mux::Fdcansel::HSE;
     }
-
     let p: embassy_stm32::Peripherals = embassy_stm32::init(config);
+   
     
     let mut brakelight = Output::new(p.PC13, Level::Low, Speed::Low);
-    let mut _buzzer = Output::new(p.PC14, Level::Low, Speed::Low);
-    let mut _extra = Output::new(p.PC15, Level::Low, Speed::Low);
+    let _buzzer_in = Input::new(p.PC14, Pull::Up);
+    let mut buzzer = Output::new(p.PA4, Level::High, Speed::Low);
+    let _extra_in = Input::new(p.PC15, Pull::Up); // LSI pins had to be a drain gpio, so it is jumped
+    let mut extra = Output::new(p.PA5, Level::High, Speed::Low);
+
     
     let can2 = {
         let mut can = can::CanConfigurator::new(p.FDCAN2, p.PB5, p.PB6, Irqs2);
@@ -303,7 +314,7 @@ async fn main(spawner: Spawner) {
 
     let mut command_timestamp = Instant::now();
     let mut broadcast_timestamp = Instant::now(); 
-    let mut _buzzer_timestamp = Instant::now();
+    let mut buzzer_timestamp = Instant::now();
 
     loop {
         let mut timeout = false;
@@ -311,11 +322,16 @@ async fn main(spawner: Spawner) {
         // APPS Section
         let brake_pressure: u8; let throttle: u8; let plausability: bool;
         { // Control brakelight
-            let apps = MUT_APPS.lock().await;
-            brake_pressure = apps.brake_pressure1; // As of now we only care about 1 brake sensor
-            throttle = apps.throttle;
+            let apps = MUT_APPS.lock().await; 
             plausability = apps.plausability;
             timeout = timeout || apps.watchdog.elapsed().as_millis() > 100;
+            if timeout {
+                brake_pressure = 0;
+                throttle = 0;
+            }else{
+                brake_pressure = apps.brake_pressure1; // As of now we only care about 1 brake sensor
+                throttle = apps.throttle;
+            }
         }
 
         // Inverter section
@@ -333,37 +349,58 @@ async fn main(spawner: Spawner) {
             let interface = MUT_DRIVER_INTERFACE.lock().await;
             r2d = interface.r2d;
             r2d_toggled = interface.r2d_toggled;
-            timeout = timeout || interface.watchdog.elapsed().as_millis() > 100;
+            // timeout = timeout || interface.watchdog.elapsed().as_millis() > 500; // Not as critical
 
         }
 
         // Modify internal logic TODO: Buzzer
-        let ready_to_drive: bool;
+        let ready_to_drive: bool; let buzzer_state: bool;
         {
             let mut vcu = MUT_VCU.lock().await;
-            if r2d_toggled && r2d && brake_pressure < 4 && fault_code == 0 && !timeout {
+            
+            if r2d_toggled && r2d && fault_code == 0 && !timeout {
                 vcu.ready_to_drive = true;
+                vcu.buzzer = true;
+                buzzer_timestamp = Instant::now();
                 
             }
             if !r2d || fault_code > 0 || timeout {
                 vcu.ready_to_drive = false;
             }
+            if vcu.buzzer && buzzer_timestamp.elapsed().as_millis() >= 3000 {
+                vcu.buzzer = false;
+            }
             ready_to_drive = vcu.ready_to_drive;
+            buzzer_state = vcu.buzzer;
 
         }
 
         if brake_pressure > 3 {
             brakelight.set_high();
+            //extra.set_high();
         }else{
             brakelight.set_low();
+            //extra.set_high();
+        }
+
+        if buzzer_state {
+            buzzer.set_high();
+        }else{
+            buzzer.set_low();
         }
 
         if command_timestamp.elapsed().as_millis() >= 20 {
 
-            drive_command(InverterCommand::SetDriveEnable, &mut can2_tx).await;
+            //info!("R2D: {}", ready_to_drive);
+            //info!("VCU Data, R2D: {}, Fault_code: {}, timeout: {}", r2d, fault_code, timeout);
+            let mut data = [0u32; 8];
+            data[0] = ready_to_drive as u32;
+            drive_command(InverterCommand::SetDriveEnable, &mut can2_tx, &mut data).await;
 
             if ready_to_drive {
-                drive_command(InverterCommand::SetCurrent, &mut can2_tx).await;
+                let mut data = [0u32; 8];
+                data[0] = throttle as u32;
+                drive_command(InverterCommand::SetCurrent, &mut can2_tx, &mut data).await;
             }
 
             command_timestamp = Instant::now();
@@ -377,7 +414,7 @@ async fn main(spawner: Spawner) {
             data[2] = plausability as u8;
             data[3] = ready_to_drive as u8;
             data[4] = timeout as u8;
-
+            
             let frame = frame::Frame::new_extended(BRAODCAST_ID, &data).unwrap();
             can2_tx.write(&frame).await;
             
