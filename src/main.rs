@@ -3,7 +3,7 @@
 
 mod fmt;
 
-use core::ptr;
+use core::{cmp::{max, min}, ptr};
 
 use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, mutex::Mutex};
 #[cfg(not(feature = "defmt"))]
@@ -33,15 +33,15 @@ static MUT_DRIVER_INTERFACE: Mutex<ThreadModeRawMutex, DriverInterface> = Mutex:
 
 const INVERTER_NODE_ID: u8 = 30;
 const MAX_CURRENT: u16 = 230;
-const BRAODCAST_ID: u32 = 0xA0C;
+const BRAODCAST_ID: u32 = 0xC0C;
 
 enum InverterCommand {
-    SetCurrent,
-    SetBrakeCurrent,
-    SetERPM,
-    SetPosition,
-    SetRelativeCurrent,
-    SetDriveEnable,
+    SetCurrent(u8),
+    SetBrakeCurrent(u8),
+    SetERPM(u32),
+    SetPosition(u16),
+    SetRelativeCurrent(u8),
+    SetDriveEnable(bool),
 }
 
 struct Inverter {
@@ -92,12 +92,11 @@ impl APPS {
 struct VCU {
     ready_to_drive: bool,
     buzzer: bool,
-    brakelight: bool,
 }
 
 impl VCU {
     const fn new() -> VCU {
-        VCU { ready_to_drive: false, buzzer: false, brakelight: false }
+        VCU { ready_to_drive: false, buzzer: false }
     }
 }
 
@@ -113,29 +112,28 @@ impl DriverInterface {
     }
 }
 
-async fn drive_command<T>(command: InverterCommand, can: &mut CanTx<'_, T>, command_data: &mut [u32; 8])
+async fn drive_command<T>(command: InverterCommand, can: &mut CanTx<'_, T>)
 where
     T: Instance
 {
     match command {
-        InverterCommand::SetCurrent => {
-            //let apps = MUT_APPS.lock().await;
+        InverterCommand::SetCurrent(throttle) => {
             let mut data = [0u8; 8];
-            let mut current = 10 * MAX_CURRENT * command_data[0] as u16 / 100;
-            if command_data[0] < 5 { // Safety limit
+            let mut current = 10 * MAX_CURRENT * throttle as u16 / 100;
+            if throttle < 5 { // Safety limit
                 current = 0;
             }
             data[1] = current as u8;
             data[0] = (current >> 8) as u8;    
-            send_can_packet(can, 0x01, 30, &data).await;   
+            send_can_packet(can, 0x01, INVERTER_NODE_ID, &data).await;   
         },
-        InverterCommand::SetBrakeCurrent => {},
-        InverterCommand::SetERPM => {},
-        InverterCommand::SetPosition => {},
-        InverterCommand::SetRelativeCurrent => {},
-        InverterCommand::SetDriveEnable => {
+        InverterCommand::SetBrakeCurrent(throttle) => {},
+        InverterCommand::SetERPM(rpm) => {},
+        InverterCommand::SetPosition(pos) => {},
+        InverterCommand::SetRelativeCurrent(relative) => {},
+        InverterCommand::SetDriveEnable(r2d) => {
             let mut data = [0u8; 8];
-            data[0] += command_data[0] as u8;
+            data[0] += r2d as u8;
             send_can_packet(can, 0x0C, INVERTER_NODE_ID, &data).await;
         },
     }
@@ -329,7 +327,7 @@ async fn main(spawner: Spawner) {
                 brake_pressure = 0;
                 throttle = 0;
             }else{
-                brake_pressure = apps.brake_pressure1; // As of now we only care about 1 brake sensor
+                brake_pressure = max(apps.brake_pressure1, apps.brake_pressure2); // We only care about the highest pressure
                 throttle = apps.throttle;
             }
         }
@@ -375,12 +373,10 @@ async fn main(spawner: Spawner) {
 
         }
 
-        if brake_pressure > 3 {
+        if brake_pressure > 4 {
             brakelight.set_high();
-            //extra.set_high();
-        }else{
+        }else if brake_pressure < 2 {
             brakelight.set_low();
-            //extra.set_high();
         }
 
         if buzzer_state {
@@ -390,17 +386,11 @@ async fn main(spawner: Spawner) {
         }
 
         if command_timestamp.elapsed().as_millis() >= 20 {
-
-            //info!("R2D: {}", ready_to_drive);
-            //info!("VCU Data, R2D: {}, Fault_code: {}, timeout: {}", r2d, fault_code, timeout);
-            let mut data = [0u32; 8];
-            data[0] = ready_to_drive as u32;
-            drive_command(InverterCommand::SetDriveEnable, &mut can2_tx, &mut data).await;
+            //It is very important to not use a Mutex Lock, and a canbus await at the same place, as this can cause mutex deadlocks
+            drive_command(InverterCommand::SetDriveEnable(ready_to_drive), &mut can2_tx).await;
 
             if ready_to_drive {
-                let mut data = [0u32; 8];
-                data[0] = throttle as u32;
-                drive_command(InverterCommand::SetCurrent, &mut can2_tx, &mut data).await;
+                drive_command(InverterCommand::SetCurrent(throttle), &mut can2_tx).await;
             }
 
             command_timestamp = Instant::now();
