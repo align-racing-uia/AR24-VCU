@@ -30,6 +30,7 @@ static MUT_APPS: Mutex<ThreadModeRawMutex, APPS> = Mutex::new(APPS::new());
 static MUT_VCU: Mutex<ThreadModeRawMutex, VCU> = Mutex::new(VCU::new());
 static MUT_INVERTER:  Mutex<ThreadModeRawMutex, Inverter> = Mutex::new(Inverter::new());
 static MUT_DRIVER_INTERFACE: Mutex<ThreadModeRawMutex, DriverInterface> = Mutex::new(DriverInterface::new());
+static MUT_ACU_INTERFACE: Mutex<ThreadModeRawMutex, ACU> = Mutex::new(ACU::new());
 
 const INVERTER_NODE_ID: u8 = 30;
 const MAX_CURRENT: u16 = 230;
@@ -112,6 +113,20 @@ impl DriverInterface {
     }
 }
 
+struct ACU {
+    sdc: bool,
+    pre: bool,
+    airp: bool, 
+    airm: bool,
+    watchdog: Instant
+}
+impl ACU {
+    const fn new() -> ACU {
+        ACU { sdc: false, pre: false, airp: false, airm: false, watchdog: Instant::MIN }
+    }
+}
+
+
 async fn drive_command<T>(command: InverterCommand, can: &mut CanTx<'_, T>)
 where
     T: Instance
@@ -119,9 +134,12 @@ where
     match command {
         InverterCommand::SetCurrent(throttle) => {
             let mut data = [0u8; 8];
-            let mut current = 10 * MAX_CURRENT * throttle as u16 / 100;
+            let mut current = 10 * MAX_CURRENT * throttle as u16 / 255;
             if throttle < 5 { // Safety limit
                 current = 0;
+            }
+            if current > 230 {
+                current = 230;
             }
             data[1] = current as u8;
             data[0] = (current >> 8) as u8;    
@@ -230,6 +248,25 @@ async fn read_drive_can(mut can: CanRx<'static, FDCAN2>)
                             _ => {}
                         }
                         driver_interface.watchdog = Instant::now();
+                    },
+                    0x0B => {
+                        let mut acu = MUT_ACU_INTERFACE.lock().await;
+                        acu.watchdog = Instant::now();
+                        match packet_id {
+                            0x1 => {
+                                acu.sdc = (data[0] & 1) > 0;
+                                acu.airm = (data[0] & 2) > 0;
+                                acu.airp = (data[0] & 4) > 0;
+                                acu.pre = (data[0] & 8) > 0;
+                            },
+                            _ => {
+                                acu.sdc = (data[0] & 1) > 0;
+                                acu.airm = (data[0] & 2) > 0;
+                                acu.airp = (data[0] & 4) > 0;
+                                acu.pre = (data[0] & 8) > 0;
+                            }
+                        };
+                        
                     },
                     _ => {
                         //info!("Unknown sender! Checking against compatible basic IDs");
@@ -351,18 +388,31 @@ async fn main(spawner: Spawner) {
 
         }
 
+        let sdc: bool; let pre: bool; let airm: bool; let airp: bool;
+        {
+            let acu = MUT_ACU_INTERFACE.lock().await;
+            if acu.watchdog.elapsed().as_millis() > 500 {
+                timeout = true;
+            }
+            sdc = acu.sdc;
+            pre = acu.pre;
+            airm = acu.airm;
+            airp = acu.airp;
+        }
+
         // Modify internal logic TODO: Buzzer
         let ready_to_drive: bool; let buzzer_state: bool;
         {
             let mut vcu = MUT_VCU.lock().await;
+            info!("R2D: {}, SDC: {}, Timeout: {}, fault_code: {}", r2d, sdc, timeout, fault_code);
             
-            if r2d_toggled && r2d && fault_code == 0 && !timeout {
+            if sdc && r2d_toggled && r2d && fault_code == 0 && !timeout {
                 vcu.ready_to_drive = true;
                 vcu.buzzer = true;
                 buzzer_timestamp = Instant::now();
                 
             }
-            if !r2d || fault_code > 0 || timeout {
+            if !r2d || fault_code > 0 || !sdc || timeout {
                 vcu.ready_to_drive = false;
             }
             if vcu.buzzer && buzzer_timestamp.elapsed().as_millis() >= 3000 {
