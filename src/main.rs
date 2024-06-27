@@ -33,7 +33,7 @@ static MUT_DRIVER_INTERFACE: Mutex<ThreadModeRawMutex, DriverInterface> = Mutex:
 static MUT_ACU_INTERFACE: Mutex<ThreadModeRawMutex, ACU> = Mutex::new(ACU::new());
 
 const INVERTER_NODE_ID: u8 = 30;
-const MAX_CURRENT: u16 = 230;
+const MAX_CURRENT: u32 = 80;
 const BRAODCAST_ID: u32 = 0xC0C;
 
 enum InverterCommand {
@@ -126,6 +126,23 @@ impl ACU {
     }
 }
 
+struct BMS {
+    pack_current: u16,
+    pack_voltage: u16,
+    pack_soc: u8,
+    relay_state: u16,
+    pack_dcl: u32,
+    high_temp: u8,
+    low_temp: u8,
+    failsafe: u8,
+}
+
+impl BMS {
+    const fn new() -> BMS {
+        BMS {}
+    }
+}
+
 
 async fn drive_command<T>(command: InverterCommand, can: &mut CanTx<'_, T>)
 where
@@ -133,14 +150,16 @@ where
 {
     match command {
         InverterCommand::SetCurrent(throttle) => {
+            // Throttle goes from 0-254
             let mut data = [0u8; 8];
-            let mut current = 10 * MAX_CURRENT * throttle as u16 / 255;
+            let mut current: u32 = 10 * MAX_CURRENT * throttle as u32 / 255;
             if throttle < 5 { // Safety limit
                 current = 0;
             }
-            if current > 230 {
-                current = 230;
+            if current > MAX_CURRENT * 10 {
+                current = MAX_CURRENT * 10;
             }
+            info!("{}, {}", current, current >> 8);
             data[1] = current as u8;
             data[0] = (current >> 8) as u8;    
             send_can_packet(can, 0x01, INVERTER_NODE_ID, &data).await;   
@@ -355,7 +374,7 @@ async fn main(spawner: Spawner) {
         let mut timeout = false;
 
         // APPS Section
-        let brake_pressure: u8; let throttle: u8; let plausability: bool;
+        let brake_pressure: u8; let mut throttle: u8; let plausability: bool;
         { // Control brakelight
             let apps = MUT_APPS.lock().await; 
             plausability = apps.plausability;
@@ -404,7 +423,7 @@ async fn main(spawner: Spawner) {
         let ready_to_drive: bool; let buzzer_state: bool;
         {
             let mut vcu = MUT_VCU.lock().await;
-            info!("R2D: {}, SDC: {}, Timeout: {}, fault_code: {}", r2d, sdc, timeout, fault_code);
+            //info!("R2D: {}, SDC: {}, Timeout: {}, fault_code: {}", r2d, sdc, timeout, fault_code);
             
             if sdc && r2d_toggled && r2d && fault_code == 0 && !timeout {
                 vcu.ready_to_drive = true;
@@ -434,12 +453,16 @@ async fn main(spawner: Spawner) {
         }else{
             buzzer.set_low();
         }
-
+        let mut bspd_light = false;
         if command_timestamp.elapsed().as_millis() >= 20 {
             //It is very important to not use a Mutex Lock, and a canbus await at the same place, as this can cause mutex deadlocks
             drive_command(InverterCommand::SetDriveEnable(ready_to_drive), &mut can2_tx).await;
 
             if ready_to_drive {
+                if brake_pressure > 15 {
+                    throttle = 0;
+                    bspd_light = true;
+                }
                 drive_command(InverterCommand::SetCurrent(throttle), &mut can2_tx).await;
             }
 
@@ -454,6 +477,7 @@ async fn main(spawner: Spawner) {
             data[2] = plausability as u8;
             data[3] = ready_to_drive as u8;
             data[4] = timeout as u8;
+            data[5] = bspd_light as u8;
             
             let frame = frame::Frame::new_extended(BRAODCAST_ID, &data).unwrap();
             can2_tx.write(&frame).await;
