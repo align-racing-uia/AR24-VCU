@@ -35,14 +35,14 @@ static MUT_BMS: Mutex<ThreadModeRawMutex, BMS> = Mutex::new(BMS::new());
 
 const INVERTER_NODE_ID: u8 = 30;
 const BRAODCAST_ID: u32 = 0xC0C;
-const MAX_AC_CURRENT: u16 = 80 * 10;
+const MAX_AC_CURRENT: u32 = 80 * 10;
 
 enum InverterCommand {
     SetCurrent(u32),
     SetBrakeCurrent(u16),
     SetERPM(u32),
     SetPosition(u16),
-    SetMaxACCurrent(u16),
+    SetMaxACCurrent(u32),
     SetMaxDCCurrent(u32),
     SetRelativeCurrent(u8),
     SetDriveEnable(bool),
@@ -508,12 +508,12 @@ async fn main(spawner: Spawner) {
                     throttle = 0;
                     bspd_lite = true;
                 }
-                let mut current: u32 = max_dc_current * throttle as u32 / 255;
+                let mut current: u32 = MAX_AC_CURRENT * throttle as u32 / 255;
                 if throttle < 5 { // Safety limit
                     current = 0;
                 }
-                if current > max_dc_current {
-                    current = max_dc_current;
+                if current > MAX_AC_CURRENT {
+                    current = MAX_AC_CURRENT;
                 }
                 drive_command(InverterCommand::SetCurrent(current), &mut can2_tx).await;
             }
