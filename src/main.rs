@@ -35,12 +35,14 @@ static MUT_BMS: Mutex<ThreadModeRawMutex, BMS> = Mutex::new(BMS::new());
 
 const INVERTER_NODE_ID: u8 = 30;
 const BRAODCAST_ID: u32 = 0xC0C;
+const MAX_AC_CURRENT: u16 = 80 * 10;
 
 enum InverterCommand {
     SetCurrent(u32),
     SetBrakeCurrent(u16),
     SetERPM(u32),
     SetPosition(u16),
+    SetMaxACCurrent(u16),
     SetMaxDCCurrent(u32),
     SetRelativeCurrent(u8),
     SetDriveEnable(bool),
@@ -172,10 +174,16 @@ where
         InverterCommand::SetERPM(_rpm) => {},
         InverterCommand::SetPosition(_pos) => {},
         InverterCommand::SetRelativeCurrent(_relative) => {},
-        InverterCommand::SetMaxDCCurrent(max_current) => {
+        InverterCommand::SetMaxACCurrent(max_current) => {
             let mut data = [0xFF; 8];
             data[1] = max_current as u8;
             data[0] = (max_current >> 8) as u8;    
+            send_can_packet(can, 0x08, INVERTER_NODE_ID, &data).await;   
+        },
+        InverterCommand::SetMaxDCCurrent(max_current) => {
+            let mut data = [0xFF; 8];
+            data[1] = (max_current) as u8;
+            data[0] = ((max_current) >> 8) as u8;    
             send_can_packet(can, 0x0A, INVERTER_NODE_ID, &data).await;   
         },
         InverterCommand::SetDriveEnable(r2d) => {
@@ -290,6 +298,7 @@ async fn read_drive_can(mut can: CanRx<'static, FDCAN2>)
                             },
                             0x03 => {
                                 bms.pack_dcl = (data[3] as u32) | ((data[2] as u32) << 8) | ((data[1] as u32) << 16) | ((data[0] as u32) << 24);
+                                bms.pack_dcl *= 10;
                             },
                             0x04 => {
 
@@ -429,7 +438,7 @@ async fn main(spawner: Spawner) {
         let max_dc_current: u32;
         {
             let bms = MUT_BMS.lock().await;
-            max_dc_current = bms.pack_dcl * 10;
+            max_dc_current = bms.pack_dcl;
         }
 
         // Driver Interface section
@@ -488,15 +497,16 @@ async fn main(spawner: Spawner) {
         }else{
             buzzer.set_low();
         }
-        let mut bspd_light = false;
+        let mut bspd_lite = false;
         if command_timestamp.elapsed().as_millis() >= 20 {
             //It is very important to not use a Mutex Lock, and a canbus await at the same place, as this can cause mutex deadlocks
             drive_command(InverterCommand::SetDriveEnable(ready_to_drive), &mut can2_tx).await;
             drive_command(InverterCommand::SetMaxDCCurrent(max_dc_current), &mut can2_tx).await;
+            drive_command(InverterCommand::SetMaxACCurrent(MAX_AC_CURRENT), &mut can2_tx).await;
             if ready_to_drive {
                 if brake_pressure > 15 {
                     throttle = 0;
-                    bspd_light = true;
+                    bspd_lite = true;
                 }
                 let mut current: u32 = max_dc_current * throttle as u32 / 255;
                 if throttle < 5 { // Safety limit
@@ -517,9 +527,9 @@ async fn main(spawner: Spawner) {
             data[0] = throttle;
             data[1] = brake_pressure;
             data[2] = plausability as u8;
-            data[3] = ready_to_drive as u8;
+            data[3] = (ready_to_drive as u8);
             data[4] = timeout as u8;
-            data[5] = bspd_light as u8;
+            data[5] = bspd_lite as u8;
             
             let frame = frame::Frame::new_extended(BRAODCAST_ID, &data).unwrap();
             can2_tx.write(&frame).await;
