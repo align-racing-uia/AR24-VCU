@@ -35,7 +35,7 @@ static MUT_BMS: Mutex<ThreadModeRawMutex, BMS> = Mutex::new(BMS::new());
 
 const INVERTER_NODE_ID: u8 = 30;
 const BRAODCAST_ID: u32 = 0xC0C;
-const MAX_AC_CURRENT: u32 = 80 * 10;
+const MAX_AC_CURRENT: u32 = 352 * 10;
 
 enum InverterCommand {
     SetCurrent(u32),
@@ -188,7 +188,7 @@ where
         },
         InverterCommand::SetDriveEnable(r2d) => {
             let mut data = [0xFF; 8];
-            data[0] += r2d as u8;
+            data[0] = r2d as u8;
             send_can_packet(can, 0x0C, INVERTER_NODE_ID, &data).await;
         },
     }
