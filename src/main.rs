@@ -438,7 +438,7 @@ async fn main(spawner: Spawner) {
         let max_dc_current: u32;
         {
             let bms = MUT_BMS.lock().await;
-            max_dc_current = bms.pack_dcl;
+            max_dc_current = 2000;
         }
 
         // Driver Interface section
