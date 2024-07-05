@@ -12,7 +12,7 @@ use panic_halt as _;
 use {defmt_rtt as _, panic_probe as _};
 
 use embassy_executor::Spawner;
-use embassy_stm32::{adc, bind_interrupts, can::{self, filter::{ExtendedFilter, ExtendedFilterSlot, Filter, StandardFilter, StandardFilterSlot}, frame, BufferedCan, Can, CanRx, CanTx, Instance, RxBuf, TxBuf}, dma::Priority, exti, gpio::{AnyPin, Input, Level, Output, Pin, Pull, Speed}, peripherals::{FDCAN1, FDCAN2}, time::mhz, Config, Peripheral};
+use embassy_stm32::{bind_interrupts, can::{self, filter::{ExtendedFilter, ExtendedFilterSlot, Filter, StandardFilter, StandardFilterSlot}, frame, BufferedCan, Can, CanRx, CanTx, Instance, RxBuf, TxBuf}, dma::Priority, exti, gpio::{AnyPin, Input, Level, Output, Pin, Pull, Speed}, peripherals::{FDCAN1, FDCAN2}, time::mhz, Config, Peripheral};
 use embassy_time::{Instant, Timer};
 use fmt::info;
 
@@ -36,6 +36,7 @@ static MUT_BMS: Mutex<ThreadModeRawMutex, BMS> = Mutex::new(BMS::new());
 const INVERTER_NODE_ID: u8 = 30;
 const BRAODCAST_ID: u32 = 0xC0C;
 const MAX_AC_CURRENT: u32 = 352 * 10;
+const MAX_DC_CURRENT: u32 = 200 * 10;
 
 enum InverterCommand {
     SetCurrent(u32),
@@ -93,14 +94,24 @@ impl APPS {
     }
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum VCUFaultCode {
+    None = 0,
+    CanTimeout = 1,
+    APPSPlausability = 2,
+    InverterFault = 3,
+    BMSFault = 4,
+    
+}
 struct VCU {
     ready_to_drive: bool,
     buzzer: bool,
+    fault_code: VCUFaultCode,
 }
 
 impl VCU {
     const fn new() -> VCU {
-        VCU { ready_to_drive: false, buzzer: false }
+        VCU { ready_to_drive: false, buzzer: false, fault_code: VCUFaultCode::None }
     }
 }
 
@@ -427,18 +438,19 @@ async fn main(spawner: Spawner) {
         }
 
         // Inverter section
-        let fault_code: u8;
+        let inverter_fault_code: u8;
         {
             let inverter = MUT_INVERTER.lock().await;
-            fault_code = inverter.fault_code;
+            inverter_fault_code = inverter.fault_code;
             timeout = timeout || inverter.watchdog.elapsed().as_millis() > 100;
 
         }
 
-        let max_dc_current: u32;
+        let max_dc_current: u32; let pack_soc: u8;
         {
             let bms = MUT_BMS.lock().await;
-            max_dc_current = 2000;
+            max_dc_current = MAX_DC_CURRENT;
+            pack_soc = bms.pack_soc;
         }
 
         // Driver Interface section
@@ -464,18 +476,27 @@ async fn main(spawner: Spawner) {
         }
 
         // Modify internal logic TODO: Buzzer
-        let ready_to_drive: bool; let buzzer_state: bool;
+        let ready_to_drive: bool; let buzzer_state: bool; let vcu_fault_code: VCUFaultCode;
         {
             let mut vcu = MUT_VCU.lock().await;
-            //info!("R2D: {}, SDC: {}, Timeout: {}, fault_code: {}", r2d, sdc, timeout, fault_code);
-            
-            if sdc && brake_pressure > 15 && r2d_toggled && r2d && fault_code == 0 && !timeout {
+
+            /* Error Checking */
+            if inverter_fault_code > 0 {
+                vcu.fault_code = VCUFaultCode::InverterFault;
+            }
+            if timeout {
+                vcu.fault_code = VCUFaultCode::CanTimeout;
+            }
+            /* Error checking done */
+            vcu_fault_code = vcu.fault_code;
+
+            if sdc && brake_pressure > 15 && r2d_toggled && r2d && vcu_fault_code == VCUFaultCode::None && !timeout {
                 vcu.ready_to_drive = true;
                 vcu.buzzer = true;
                 buzzer_timestamp = Instant::now();
                 
             }
-            if !r2d || fault_code > 0 || !sdc || timeout {
+            if !r2d || vcu_fault_code != VCUFaultCode::None || !sdc || timeout {
                 vcu.ready_to_drive = false;
             }
             if vcu.buzzer && buzzer_timestamp.elapsed().as_millis() >= 3000 {
@@ -497,11 +518,12 @@ async fn main(spawner: Spawner) {
         }else{
             buzzer.set_low();
         }
+
         let mut bspd_lite = false;
-        if command_timestamp.elapsed().as_millis() >= 20 {
+        if command_timestamp.elapsed().as_millis() >= 10 {
             //It is very important to not use a Mutex Lock, and a canbus await at the same place, as this can cause mutex deadlocks
             drive_command(InverterCommand::SetDriveEnable(ready_to_drive), &mut can2_tx).await;
-            drive_command(InverterCommand::SetMaxDCCurrent(max_dc_current), &mut can2_tx).await;
+            drive_command(InverterCommand::SetMaxDCCurrent(MAX_DC_CURRENT), &mut can2_tx).await;
             drive_command(InverterCommand::SetMaxACCurrent(MAX_AC_CURRENT), &mut can2_tx).await;
             if ready_to_drive {
                 if brake_pressure > 15 {
@@ -526,10 +548,13 @@ async fn main(spawner: Spawner) {
             let mut data = [0u8; 8];
             data[0] = throttle;
             data[1] = brake_pressure;
-            data[2] = plausability as u8;
-            data[3] = (ready_to_drive as u8);
-            data[4] = timeout as u8;
-            data[5] = bspd_lite as u8;
+            data[2] = (sdc as u8) << 4; 
+            data[2] = (plausability as u8) << 3;
+            data[2] |= (timeout as u8) << 2;
+            data[2] |= (bspd_lite as u8) << 1;
+            data[2] |= (ready_to_drive as u8);
+            data[3] = vcu_fault_code as u8;
+            data[4] = pack_soc as u8;
             
             let frame = frame::Frame::new_extended(BRAODCAST_ID, &data).unwrap();
             can2_tx.write(&frame).await;
