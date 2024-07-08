@@ -37,6 +37,7 @@ const INVERTER_NODE_ID: u8 = 30;
 const BRAODCAST_ID: u32 = 0xC0C;
 const MAX_AC_CURRENT: u32 = 352 * 10;
 const MAX_DC_CURRENT: u32 = 200 * 10;
+const REGEN_STEPS: u16 = 8 * 10;
 
 enum InverterCommand {
     SetCurrent(u32),
@@ -107,23 +108,27 @@ struct VCU {
     ready_to_drive: bool,
     buzzer: bool,
     fault_code: VCUFaultCode,
+    regen: u8 // a value from 0-5
 }
 
 impl VCU {
     const fn new() -> VCU {
-        VCU { ready_to_drive: false, buzzer: false, fault_code: VCUFaultCode::None }
+        VCU { ready_to_drive: false, buzzer: false, fault_code: VCUFaultCode::None, regen: 0 }
     }
 }
 
 struct DriverInterface {
     r2d: bool,
     r2d_toggled: bool,
+    clear_faults: bool,
+    m1: bool,
+    m2: bool,
     watchdog: Instant
 }
 
 impl DriverInterface {
     const fn new() -> DriverInterface {
-        DriverInterface { r2d: false, r2d_toggled: false, watchdog: Instant::MIN }
+        DriverInterface { r2d: false, r2d_toggled: false, clear_faults: false, m1: false, m2: false, watchdog: Instant::MIN }
     }
 }
 
@@ -181,7 +186,12 @@ where
             data[0] = (current >> 8) as u8;    
             send_can_packet(can, 0x01, INVERTER_NODE_ID, &data).await;   
         },
-        InverterCommand::SetBrakeCurrent(_throttle) => {},
+        InverterCommand::SetBrakeCurrent(current) => {
+            let mut data = [0xFF; 8];
+            data[1] = current as u8;
+            data[0] = (current >> 8) as u8;    
+            send_can_packet(can, 0x02, INVERTER_NODE_ID, &data).await;   
+        },
         InverterCommand::SetERPM(_rpm) => {},
         InverterCommand::SetPosition(_pos) => {},
         InverterCommand::SetRelativeCurrent(_relative) => {},
@@ -293,6 +303,13 @@ async fn read_drive_can(mut can: CanRx<'static, FDCAN2>)
                                 //info!("R2D Read: {}, R2D_Toggle: {}", r2d, driver_interface.r2d_toggled);
                                 driver_interface.r2d = r2d;
                             },
+                            0x21 => {
+                                driver_interface.m1 = ( data[0] & 0x2 ) > 0;
+                                driver_interface.m2 = ( data[0] & 0x1 ) > 0;
+                                driver_interface.clear_faults = ( data[0] & 0x4 ) > 0;
+                                //driver_interface.fan = ( data[0] & 0x8 ) > 0;
+
+                            },
                             _ => {}
                         }
                         driver_interface.watchdog = Instant::now();
@@ -327,12 +344,7 @@ async fn read_drive_can(mut can: CanRx<'static, FDCAN2>)
                                 acu.airp = (data[0] & 4) > 0;
                                 acu.pre = (data[0] & 8) > 0;
                             },
-                            _ => {
-                                acu.sdc = (data[0] & 1) > 0;
-                                acu.airm = (data[0] & 2) > 0;
-                                acu.airp = (data[0] & 4) > 0;
-                                acu.pre = (data[0] & 8) > 0;
-                            }
+                            _ => {}
                         };
                         
                     },
@@ -418,6 +430,7 @@ async fn main(spawner: Spawner) {
     let mut command_timestamp = Instant::now();
     let mut broadcast_timestamp = Instant::now(); 
     let mut buzzer_timestamp = Instant::now();
+    let mut button_timestamp = Instant::now();
 
     loop {
         let mut timeout = false;
@@ -454,11 +467,13 @@ async fn main(spawner: Spawner) {
         }
 
         // Driver Interface section
-        let r2d: bool; let r2d_toggled: bool;
+        let r2d: bool; let r2d_toggled: bool; let m1: bool; let m2: bool;
         {
             let interface = MUT_DRIVER_INTERFACE.lock().await;
             r2d = interface.r2d;
             r2d_toggled = interface.r2d_toggled;
+            m1 = interface.m1;
+            m2 = interface.m2;
             // timeout = timeout || interface.watchdog.elapsed().as_millis() > 500; // Not as critical
 
         }
@@ -476,9 +491,18 @@ async fn main(spawner: Spawner) {
         }
 
         // Modify internal logic TODO: Buzzer
-        let ready_to_drive: bool; let buzzer_state: bool; let vcu_fault_code: VCUFaultCode;
+        let ready_to_drive: bool; let buzzer_state: bool; let vcu_fault_code: VCUFaultCode; let regen: u8; 
         {
             let mut vcu = MUT_VCU.lock().await;
+
+            if m1 && vcu.regen > 0 {
+                vcu.regen -= 1;
+            }
+            if m2 && vcu.regen < 5 {
+                vcu.regen += 1;
+            }
+
+            regen = vcu.regen;
 
             /* Error Checking */
             if inverter_fault_code > 0 {
@@ -486,6 +510,10 @@ async fn main(spawner: Spawner) {
             }
             if timeout {
                 vcu.fault_code = VCUFaultCode::CanTimeout;
+            }
+
+            if !timeout && inverter_fault_code < 1 {
+                vcu.fault_code = VCUFaultCode::None;
             }
             /* Error checking done */
             vcu_fault_code = vcu.fault_code;
@@ -531,12 +559,17 @@ async fn main(spawner: Spawner) {
                     bspd_lite = true;
                 }
                 let mut current: u32 = MAX_AC_CURRENT * throttle as u32 / 255;
-                if throttle < 5 { // Safety limit
+                let mut braking_current: u16 = 0;
+                if throttle <= 10 { // Safety limit
                     current = 0;
+                }
+                if throttle <= 10 {
+                    braking_current = (regen as u16) * REGEN_STEPS;
                 }
                 if current > MAX_AC_CURRENT {
                     current = MAX_AC_CURRENT;
                 }
+                drive_command(InverterCommand::SetBrakeCurrent(braking_current as u16), &mut can2_tx).await;
                 drive_command(InverterCommand::SetCurrent(current), &mut can2_tx).await;
             }
 
@@ -549,12 +582,13 @@ async fn main(spawner: Spawner) {
             data[0] = throttle;
             data[1] = brake_pressure;
             data[2] = (sdc as u8) << 4; 
-            data[2] = (plausability as u8) << 3;
+            data[2] |= (plausability as u8) << 3;
             data[2] |= (timeout as u8) << 2;
             data[2] |= (bspd_lite as u8) << 1;
             data[2] |= (ready_to_drive as u8);
             data[3] = vcu_fault_code as u8;
             data[4] = pack_soc as u8;
+            data[5] = regen as u8;
             
             let frame = frame::Frame::new_extended(BRAODCAST_ID, &data).unwrap();
             can2_tx.write(&frame).await;
