@@ -27,7 +27,6 @@ bind_interrupts!(struct Irqs2 {
 });
 
 static MUT_APPS: Mutex<ThreadModeRawMutex, APPS> = Mutex::new(APPS::new());
-static MUT_VCU: Mutex<ThreadModeRawMutex, VCU> = Mutex::new(VCU::new());
 static MUT_INVERTER:  Mutex<ThreadModeRawMutex, Inverter> = Mutex::new(Inverter::new());
 static MUT_DRIVER_INTERFACE: Mutex<ThreadModeRawMutex, DriverInterface> = Mutex::new(DriverInterface::new());
 static MUT_ACU_INTERFACE: Mutex<ThreadModeRawMutex, ACU> = Mutex::new(ACU::new());
@@ -36,17 +35,18 @@ static MUT_BMS: Mutex<ThreadModeRawMutex, BMS> = Mutex::new(BMS::new());
 const INVERTER_NODE_ID: u8 = 30;
 const BRAODCAST_ID: u32 = 0xC0C;
 const MAX_AC_CURRENT: u32 = 352 * 10;
+const MAX_THROTTLE_CURRENT: u32 = MAX_AC_CURRENT * 110 / 100;
 const MAX_DC_CURRENT: u32 = 200 * 10;
-const REGEN_STEPS: u16 = 8 * 10;
+const MAX_DC_BRAKE_CURRENT: u32 = 42 * 10;
+const MAX_AC_BRAKE_CURRENT: u32 = 160 * 10;
 
 enum InverterCommand {
     SetCurrent(u32),
     SetBrakeCurrent(u16),
-    SetERPM(u32),
-    SetPosition(u16),
     SetMaxACCurrent(u32),
+    SetMaxACBrakeCurrent(u32),
     SetMaxDCCurrent(u32),
-    SetRelativeCurrent(u8),
+    SetMaxDCBrakeCurrent(u32),
     SetDriveEnable(bool),
 }
 
@@ -99,22 +99,16 @@ impl APPS {
 enum VCUFaultCode {
     None = 0,
     CanTimeout = 1,
-    APPSPlausability = 2,
-    InverterFault = 3,
-    BMSFault = 4,
-    
-}
-struct VCU {
-    ready_to_drive: bool,
-    buzzer: bool,
-    fault_code: VCUFaultCode,
-    regen: u8 // a value from 0-5
+    ACUTimeout = 2,
+    APPSTimeout = 3,
+    InverterTimeout = 4,
+    InverterFault = 5,   
 }
 
-impl VCU {
-    const fn new() -> VCU {
-        VCU { ready_to_drive: false, buzzer: false, fault_code: VCUFaultCode::None, regen: 0 }
-    }
+enum VCUMinorFault {
+    None = 0,
+    BSPDLite = 1,
+    APPSPlaus = 2,
 }
 
 struct DriverInterface {
@@ -123,12 +117,13 @@ struct DriverInterface {
     clear_faults: bool,
     m1: bool,
     m2: bool,
+    regen: u8,
     watchdog: Instant
 }
 
 impl DriverInterface {
     const fn new() -> DriverInterface {
-        DriverInterface { r2d: false, r2d_toggled: false, clear_faults: false, m1: false, m2: false, watchdog: Instant::MIN }
+        DriverInterface { r2d: false, r2d_toggled: false, clear_faults: false, m1: false, m2: false, regen: 0, watchdog: Instant::MIN }
     }
 }
 
@@ -192,20 +187,29 @@ where
             data[0] = (current >> 8) as u8;    
             send_can_packet(can, 0x02, INVERTER_NODE_ID, &data).await;   
         },
-        InverterCommand::SetERPM(_rpm) => {},
-        InverterCommand::SetPosition(_pos) => {},
-        InverterCommand::SetRelativeCurrent(_relative) => {},
         InverterCommand::SetMaxACCurrent(max_current) => {
             let mut data = [0xFF; 8];
             data[1] = max_current as u8;
             data[0] = (max_current >> 8) as u8;    
             send_can_packet(can, 0x08, INVERTER_NODE_ID, &data).await;   
         },
+        InverterCommand::SetMaxACBrakeCurrent(max_current) => {
+            let mut data = [0xFF; 8];
+            data[1] = (max_current) as u8;
+            data[0] = ((max_current) >> 8) as u8;    
+            send_can_packet(can, 0x09, INVERTER_NODE_ID, &data).await; 
+        },
         InverterCommand::SetMaxDCCurrent(max_current) => {
             let mut data = [0xFF; 8];
             data[1] = (max_current) as u8;
             data[0] = ((max_current) >> 8) as u8;    
             send_can_packet(can, 0x0A, INVERTER_NODE_ID, &data).await;   
+        },
+        InverterCommand::SetMaxDCBrakeCurrent(max_current) => {
+            let mut data = [0xFF; 8];
+            data[1] = (max_current) as u8;
+            data[0] = ((max_current) >> 8) as u8;    
+            send_can_packet(can, 0x0B, INVERTER_NODE_ID, &data).await; 
         },
         InverterCommand::SetDriveEnable(r2d) => {
             let mut data = [0xFF; 8];
@@ -307,6 +311,7 @@ async fn read_drive_can(mut can: CanRx<'static, FDCAN2>)
                                 driver_interface.m1 = ( data[0] & 0x2 ) > 0;
                                 driver_interface.m2 = ( data[0] & 0x1 ) > 0;
                                 driver_interface.clear_faults = ( data[0] & 0x4 ) > 0;
+                                driver_interface.regen = data[1];
                                 //driver_interface.fan = ( data[0] & 0x8 ) > 0;
 
                             },
@@ -321,7 +326,7 @@ async fn read_drive_can(mut can: CanRx<'static, FDCAN2>)
                             0x02 => {
                                 bms.pack_current = (data[1] as u16) | (data[0] as u16) << 8;
                                 bms.pack_voltage = (data[3] as u16) | (data[2] as u16) << 8;
-                                bms.pack_soc = data[4];
+                                bms.pack_soc = data[4] / 2;
                                 
                             },
                             0x03 => {
@@ -427,21 +432,28 @@ async fn main(spawner: Spawner) {
 
     spawner.spawn(read_drive_can(can2_rx)).unwrap();
 
+    // All time tracking variables
     let mut command_timestamp = Instant::now();
     let mut broadcast_timestamp = Instant::now(); 
     let mut buzzer_timestamp = Instant::now();
     let mut button_timestamp = Instant::now();
 
-    loop {
-        let mut timeout = false;
+    // All semi-global states
+    let mut regen_enabled = false;
+    let mut ready_to_drive = false;
+    let mut bspd_lite = false;
+    let mut buzzer_state = false;
+    // Global error state
+    let mut vcu_fault_code = VCUFaultCode::None;
 
+    loop {
         // APPS Section
-        let brake_pressure: u8; let mut throttle: u8; let plausability: bool;
+        let brake_pressure: u8; let mut throttle: u8; let plausability: bool; let apps_timeout ;
         { // Control brakelight
             let apps = MUT_APPS.lock().await; 
             plausability = apps.plausability;
-            timeout = timeout || apps.watchdog.elapsed().as_millis() > 100;
-            if timeout {
+            apps_timeout = apps.watchdog.elapsed().as_millis() > 250;
+            if apps_timeout {
                 brake_pressure = 0;
                 throttle = 0;
             }else{
@@ -451,89 +463,59 @@ async fn main(spawner: Spawner) {
         }
 
         // Inverter section
-        let inverter_fault_code: u8;
+        let inverter_fault_code: u8; let inverter_timeout: bool;
         {
             let inverter = MUT_INVERTER.lock().await;
             inverter_fault_code = inverter.fault_code;
-            timeout = timeout || inverter.watchdog.elapsed().as_millis() > 100;
+            inverter_timeout = inverter.watchdog.elapsed().as_millis() > 500;
 
         }
 
-        let max_dc_current: u32; let pack_soc: u8;
+        let pack_soc: u8;
         {
             let bms = MUT_BMS.lock().await;
-            max_dc_current = MAX_DC_CURRENT;
             pack_soc = bms.pack_soc;
         }
 
         // Driver Interface section
-        let r2d: bool; let r2d_toggled: bool; let m1: bool; let m2: bool;
+        let r2d: bool; let r2d_toggled: bool; let m1: bool; let m2: bool; let regen: u8; let clear_faults: bool;
         {
             let interface = MUT_DRIVER_INTERFACE.lock().await;
             r2d = interface.r2d;
             r2d_toggled = interface.r2d_toggled;
             m1 = interface.m1;
             m2 = interface.m2;
+            regen = interface.regen;
+            clear_faults = interface.clear_faults;
             // timeout = timeout || interface.watchdog.elapsed().as_millis() > 500; // Not as critical
 
         }
 
-        let sdc: bool; let pre: bool; let airm: bool; let airp: bool;
+        let sdc: bool; let pre: bool; let airm: bool; let airp: bool; let acu_timeout: bool;
         {
             let acu = MUT_ACU_INTERFACE.lock().await;
-            if acu.watchdog.elapsed().as_millis() > 500 {
-                timeout = true;
-            }
+            acu_timeout = acu.watchdog.elapsed().as_millis() > 1000;
             sdc = acu.sdc;
             pre = acu.pre;
             airm = acu.airm;
             airp = acu.airp;
         }
+        
 
-        // Modify internal logic TODO: Buzzer
-        let ready_to_drive: bool; let buzzer_state: bool; let vcu_fault_code: VCUFaultCode; let regen: u8; 
-        {
-            let mut vcu = MUT_VCU.lock().await;
-
-            if m1 && vcu.regen > 0 {
-                vcu.regen -= 1;
-            }
-            if m2 && vcu.regen < 5 {
-                vcu.regen += 1;
-            }
-
-            regen = vcu.regen;
-
-            /* Error Checking */
-            if inverter_fault_code > 0 {
-                vcu.fault_code = VCUFaultCode::InverterFault;
-            }
-            if timeout {
-                vcu.fault_code = VCUFaultCode::CanTimeout;
-            }
-
-            if !timeout && inverter_fault_code < 1 {
-                vcu.fault_code = VCUFaultCode::None;
-            }
-            /* Error checking done */
-            vcu_fault_code = vcu.fault_code;
-
-            if sdc && brake_pressure > 15 && r2d_toggled && r2d && vcu_fault_code == VCUFaultCode::None && !timeout {
-                vcu.ready_to_drive = true;
-                vcu.buzzer = true;
-                buzzer_timestamp = Instant::now();
-                
-            }
-            if !r2d || vcu_fault_code != VCUFaultCode::None || !sdc || timeout {
-                vcu.ready_to_drive = false;
-            }
-            if vcu.buzzer && buzzer_timestamp.elapsed().as_millis() >= 3000 {
-                vcu.buzzer = false;
-            }
-            ready_to_drive = vcu.ready_to_drive;
-            buzzer_state = vcu.buzzer;
-
+        /* Error Checking */
+        if inverter_fault_code > 0 {
+            vcu_fault_code = VCUFaultCode::InverterFault;
+        } else if apps_timeout {
+            vcu_fault_code = VCUFaultCode::APPSTimeout;
+        } else if acu_timeout {
+            vcu_fault_code = VCUFaultCode::ACUTimeout;
+        } else if inverter_timeout {
+            vcu_fault_code = VCUFaultCode::InverterTimeout;
+        } else { 
+            vcu_fault_code = VCUFaultCode::None;
         }
+        /* Error checking done */
+        // All other state checks go here
 
         if brake_pressure > 4 {
             brakelight.set_high();
@@ -547,32 +529,61 @@ async fn main(spawner: Spawner) {
             buzzer.set_low();
         }
 
-        let mut bspd_lite = false;
+        if pack_soc < 80 {
+            regen_enabled = true;
+        }else if pack_soc > 85 {
+            regen_enabled = false;
+        }
+
+        if brake_pressure > 15 && throttle > 10 {
+            bspd_lite = true;
+        }else if brake_pressure < 4 {
+            bspd_lite = false;
+        }
+
+        if sdc && (brake_pressure > 15 || clear_faults) && r2d_toggled && r2d && vcu_fault_code == VCUFaultCode::None {
+            ready_to_drive = true;
+            buzzer_state = true;
+            buzzer_timestamp = Instant::now();
+        }
+        if !r2d || vcu_fault_code != VCUFaultCode::None || !sdc {
+            ready_to_drive = false;
+        }
+        if buzzer_state && buzzer_timestamp.elapsed().as_millis() >= 3000 {
+            buzzer_state = false;
+        }
+
         if command_timestamp.elapsed().as_millis() >= 10 {
             //It is very important to not use a Mutex Lock, and a canbus await at the same place, as this can cause mutex deadlocks
             drive_command(InverterCommand::SetDriveEnable(ready_to_drive), &mut can2_tx).await;
             drive_command(InverterCommand::SetMaxDCCurrent(MAX_DC_CURRENT), &mut can2_tx).await;
+            drive_command(InverterCommand::SetMaxACBrakeCurrent(MAX_AC_BRAKE_CURRENT), &mut can2_tx).await;
+            drive_command(InverterCommand::SetMaxDCBrakeCurrent(MAX_DC_BRAKE_CURRENT), &mut can2_tx).await;
             drive_command(InverterCommand::SetMaxACCurrent(MAX_AC_CURRENT), &mut can2_tx).await;
+            let mut regen_active = false;
             if ready_to_drive {
-                if brake_pressure > 15 {
-                    throttle = 0;
-                    bspd_lite = true;
-                }
-                let mut current: u32 = MAX_AC_CURRENT * throttle as u32 / 255;
+                let mut current: u32 = MAX_THROTTLE_CURRENT * throttle as u32 / 255;
                 let mut braking_current: u16 = 0;
+                if bspd_lite {
+                    throttle = 0;
+                }
                 if throttle <= 10 { // Safety limit
                     current = 0;
+                    regen_active = true;
                 }
-                if throttle <= 10 {
-                    braking_current = (regen as u16) * REGEN_STEPS;
+                if regen_active && !bspd_lite && regen_enabled {
+                    braking_current = MAX_AC_BRAKE_CURRENT as u16;
                 }
-                if current > MAX_AC_CURRENT {
-                    current = MAX_AC_CURRENT;
+                if current > MAX_THROTTLE_CURRENT {
+                    current = MAX_THROTTLE_CURRENT;
                 }
-                drive_command(InverterCommand::SetBrakeCurrent(braking_current as u16), &mut can2_tx).await;
-                drive_command(InverterCommand::SetCurrent(current), &mut can2_tx).await;
+                if regen_active && regen_enabled {
+                    drive_command(InverterCommand::SetBrakeCurrent(braking_current as u16), &mut can2_tx).await;
+                }else{
+                    drive_command(InverterCommand::SetCurrent(current), &mut can2_tx).await;
+                }                
+                
             }
-
             command_timestamp = Instant::now();
         }
 
@@ -583,12 +594,13 @@ async fn main(spawner: Spawner) {
             data[1] = brake_pressure;
             data[2] = (sdc as u8) << 4; 
             data[2] |= (plausability as u8) << 3;
-            data[2] |= (timeout as u8) << 2;
+            data[2] |= (regen_enabled as u8) << 2; // Moved to fault code
             data[2] |= (bspd_lite as u8) << 1;
             data[2] |= (ready_to_drive as u8);
             data[3] = vcu_fault_code as u8;
             data[4] = pack_soc as u8;
-            data[5] = regen as u8;
+            //data[5] = regen as u8;
+
             
             let frame = frame::Frame::new_extended(BRAODCAST_ID, &data).unwrap();
             can2_tx.write(&frame).await;
