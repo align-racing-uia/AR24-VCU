@@ -434,7 +434,7 @@ async fn main(spawner: Spawner) {
 
     // All time tracking variables
     let mut command_timestamp = Instant::now();
-    let mut broadcast_timestamp = Instant::now(); 
+    let mut broadcast_timestamp = Instant::now();
     let mut buzzer_timestamp = Instant::now();
     let mut button_timestamp = Instant::now();
 
@@ -443,6 +443,7 @@ async fn main(spawner: Spawner) {
     let mut ready_to_drive = false;
     let mut bspd_lite = false;
     let mut buzzer_state = false;
+    let mut updated_limits = true;
     // Global error state
     let mut vcu_fault_code = VCUFaultCode::None;
 
@@ -555,11 +556,15 @@ async fn main(spawner: Spawner) {
 
         if command_timestamp.elapsed().as_millis() >= 10 {
             //It is very important to not use a Mutex Lock, and a canbus await at the same place, as this can cause mutex deadlocks
+            if updated_limits {
+                drive_command(InverterCommand::SetMaxDCCurrent(MAX_DC_CURRENT), &mut can2_tx).await;
+                drive_command(InverterCommand::SetMaxACBrakeCurrent(MAX_AC_BRAKE_CURRENT), &mut can2_tx).await;
+                drive_command(InverterCommand::SetMaxDCBrakeCurrent(MAX_DC_BRAKE_CURRENT), &mut can2_tx).await;
+                drive_command(InverterCommand::SetMaxACCurrent(MAX_AC_CURRENT), &mut can2_tx).await;
+                updated_limits = false;
+            }
             drive_command(InverterCommand::SetDriveEnable(ready_to_drive), &mut can2_tx).await;
-            drive_command(InverterCommand::SetMaxDCCurrent(MAX_DC_CURRENT), &mut can2_tx).await;
-            drive_command(InverterCommand::SetMaxACBrakeCurrent(MAX_AC_BRAKE_CURRENT), &mut can2_tx).await;
-            drive_command(InverterCommand::SetMaxDCBrakeCurrent(MAX_DC_BRAKE_CURRENT), &mut can2_tx).await;
-            drive_command(InverterCommand::SetMaxACCurrent(MAX_AC_CURRENT), &mut can2_tx).await;
+            
             let mut regen_active = false;
             if ready_to_drive {
                 let mut current: u32 = MAX_THROTTLE_CURRENT * throttle as u32 / 255;
