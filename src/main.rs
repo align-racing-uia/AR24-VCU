@@ -544,9 +544,9 @@ async fn main(spawner: Spawner) {
             regen_active = false;
         }
 
-        if brake_pressure > 15 {
+        if brake_pressure > 5 && throttle > 25  {
             bspd_lite = true;
-        }else if brake_pressure < 4 {
+        }else if throttle < 5 {
             bspd_lite = false;
         }
 
@@ -573,16 +573,12 @@ async fn main(spawner: Spawner) {
             }
             drive_command(InverterCommand::SetDriveEnable(ready_to_drive), &mut can2_tx).await;
             
-            if ready_to_drive {
-
-                if bspd_lite {
-                    throttle = 0;
-                }                
+            if ready_to_drive {     
                 
                 if regen_active && regen_enabled {
                     // Note: Not legal in UK.
                     // let mut braking_current: u16 = 0;
-                    // if regen_active && !bspd_lite && regen_enabled {
+                    // if !bspd_lite {
                     //     braking_current = MAX_AC_BRAKE_CURRENT as u16;
                     // }
                     // drive_command(InverterCommand::SetBrakeCurrent(braking_current as u16), &mut can2_tx).await;
@@ -590,6 +586,9 @@ async fn main(spawner: Spawner) {
                     let mut current: u32 = MAX_THROTTLE_CURRENT * throttle as u32 / 255;
                     if current > MAX_THROTTLE_CURRENT {
                         current = MAX_THROTTLE_CURRENT;
+                    }
+                    if bspd_lite {
+                        current = 0;
                     }
                     drive_command(InverterCommand::SetCurrent(current), &mut can2_tx).await;
                 }                
