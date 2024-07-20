@@ -34,8 +34,8 @@ static MUT_BMS: Mutex<ThreadModeRawMutex, BMS> = Mutex::new(BMS::new());
 
 const INVERTER_NODE_ID: u8 = 30;
 const BRAODCAST_ID: u32 = 0xC0C;
-const MAX_THROTTLE_CURRENT: u32 = 352 * 10;
-const MAX_AC_CURRENT: u32 = MAX_THROTTLE_CURRENT * 110 / 100;
+const MAX_THROTTLE_CURRENT: u32 = MAX_AC_CURRENT * 90/100;
+const MAX_AC_CURRENT: u32 = 352 * 10;
 const MAX_DC_CURRENT: u32 = 200 * 10;
 const MAX_DC_BRAKE_CURRENT: u32 = 42 * 10;
 const MAX_AC_BRAKE_CURRENT: u32 = 160 * 10;
