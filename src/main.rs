@@ -284,7 +284,7 @@ async fn read_drive_can(mut can: CanRx<'static, FDCAN2>)
                         match packet_id {
                             0x0A => {
                                 apps.throttle = data[0];
-                                apps.plausability = data[1] != 0;
+                                apps.plausability = data[1] > 0;
                                 apps.brake_pressure1 = data[2];
                                 apps.brake_pressure2 = data[3];
                             }
@@ -444,6 +444,7 @@ async fn main(spawner: Spawner) {
     let mut ready_to_drive = false;
     let mut bspd_lite = false;
     let mut buzzer_state = false;
+    let mut brakelight_state = false;
     let mut updated_limits = true;
     // Global error state
     let mut vcu_fault_code = VCUFaultCode::None;
@@ -520,9 +521,9 @@ async fn main(spawner: Spawner) {
         /* Error checking done */
         // All other state checks go here
 
-        if brake_pressure > 4 {
+        if brake_pressure > 4 || regen_active {
             brakelight.set_high();
-        }else if brake_pressure < 2 {
+        }else if brake_pressure < 2 && !regen_active {
             brakelight.set_low();
         }
 
@@ -587,7 +588,7 @@ async fn main(spawner: Spawner) {
                     if current > MAX_THROTTLE_CURRENT {
                         current = MAX_THROTTLE_CURRENT;
                     }
-                    if bspd_lite {
+                    if bspd_lite || plausability {
                         current = 0;
                     }
                     drive_command(InverterCommand::SetCurrent(current), &mut can2_tx).await;
