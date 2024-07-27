@@ -33,11 +33,12 @@ static MUT_ACU_INTERFACE: Mutex<ThreadModeRawMutex, ACU> = Mutex::new(ACU::new()
 static MUT_BMS: Mutex<ThreadModeRawMutex, BMS> = Mutex::new(BMS::new());
 
 const INVERTER_NODE_ID: u8 = 30;
-const MAX_POWER: u32 = 80000;
 const BRAODCAST_ID: u32 = 0xC0C;
+const MAX_POWER: u32 = 80000;
+const MAX_AC_CURRENT: u32 = 350 * 10;
 const MAX_THROTTLE_CURRENT: u32 = MAX_AC_CURRENT * 90/100;
-const MAX_AC_CURRENT: u32 = 352 * 10;
 const MAX_DC_BRAKE_CURRENT: u32 = 42 * 10;
+const THROTTLE_DEADZONE: u8 = 25; // Out of 250
 const MAX_AC_BRAKE_CURRENT: u32 = 160 * 10;
 
 enum InverterCommand {
@@ -448,9 +449,6 @@ async fn main(spawner: Spawner) {
     // Global error state
     let mut vcu_fault_code = VCUFaultCode::None;
 
-    let mut max_current_limit = MAX_AC_CURRENT;
-    let mut max_throttle_limit = MAX_THROTTLE_CURRENT;
-    let mut max_power = MAX_POWER;
 
     loop {
         // APPS Section
@@ -486,7 +484,6 @@ async fn main(spawner: Spawner) {
             pack_current = bms.pack_current;
             pack_voltage = bms.pack_voltage;
             dcl = bms.pack_dcl;
-            max_power = (dcl * pack_voltage as u32) / 100;
         }
 
         // Driver Interface section
@@ -531,7 +528,7 @@ async fn main(spawner: Spawner) {
 
         if brake_pressure > 4 || (regen_active && regen_enabled) {
             brakelight.set_high();
-        }else if brake_pressure < 2 && !regen_active {
+        }else if brake_pressure < 2 {
             brakelight.set_low();
         }
 
@@ -547,15 +544,10 @@ async fn main(spawner: Spawner) {
             regen_enabled = false;
         }
 
-        if throttle <= 10 {
-            regen_active = true;
-        }else {
-            regen_active = false;
-        }
 
-        if brake_pressure > 5 && throttle > 25  {
+        if brake_pressure > 5 && throttle > THROTTLE_DEADZONE {
             bspd_lite = true;
-        }else if throttle < 5 {
+        }else if throttle < 10 {
             bspd_lite = false;
         }
 
@@ -577,9 +569,6 @@ async fn main(spawner: Spawner) {
         // }else{
         //     max_current_limit = ((max_power * 95500) / (1000 * erpm)) * 16/10;
         // }
-        max_current_limit = dcl * 17/10;
-
-        max_throttle_limit = max_current_limit * 90 / 100;
         
 
         /* End of adjusting AC Current */
@@ -590,7 +579,7 @@ async fn main(spawner: Spawner) {
                 drive_command(InverterCommand::SetMaxDCCurrent(dcl), &mut can2_tx).await;
                 drive_command(InverterCommand::SetMaxACBrakeCurrent(MAX_AC_BRAKE_CURRENT), &mut can2_tx).await;
                 drive_command(InverterCommand::SetMaxDCBrakeCurrent(MAX_DC_BRAKE_CURRENT), &mut can2_tx).await;
-                drive_command(InverterCommand::SetMaxACCurrent(max_current_limit), &mut can2_tx).await;
+                drive_command(InverterCommand::SetMaxACCurrent(MAX_AC_CURRENT), &mut can2_tx).await;
                 // updated_limits = false; not enabled until verified outside of competition
             }
             drive_command(InverterCommand::SetDriveEnable(ready_to_drive), &mut can2_tx).await;
@@ -605,9 +594,15 @@ async fn main(spawner: Spawner) {
                     // }
                     // drive_command(InverterCommand::SetBrakeCurrent(braking_current as u16), &mut can2_tx).await;
                 }else{
-                    let mut current: u32 = MAX_THROTTLE_CURRENT * throttle as u32 / 255;
-                    if current > max_throttle_limit {
-                        current = max_throttle_limit;
+                    let mut current: u32;
+                    if throttle >= THROTTLE_DEADZONE {
+                        current = MAX_THROTTLE_CURRENT * (throttle - THROTTLE_DEADZONE) as u32 / (255u8 - THROTTLE_DEADZONE) as u32;
+                    }else {
+                        current = 0;
+                    }
+                    
+                    if current > MAX_THROTTLE_CURRENT {
+                        current = MAX_THROTTLE_CURRENT;
                     }
                     if bspd_lite || plausability {
                         current = 0;
