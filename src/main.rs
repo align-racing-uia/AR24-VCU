@@ -551,7 +551,7 @@ async fn main(spawner: Spawner) {
             bspd_lite = false;
         }
 
-        if sdc && (brake_pressure > 15 || clear_faults) && r2d_toggled && r2d && vcu_fault_code == VCUFaultCode::None {
+        if sdc && (brake_pressure > 15) && r2d_toggled && r2d && vcu_fault_code == VCUFaultCode::None {
             ready_to_drive = true;
             buzzer_state = true;
             buzzer_timestamp = Instant::now();
@@ -559,7 +559,7 @@ async fn main(spawner: Spawner) {
         if !r2d || vcu_fault_code != VCUFaultCode::None || !sdc {
             ready_to_drive = false;
         }
-        if buzzer_state && buzzer_timestamp.elapsed().as_millis() >= 3000 {
+        if buzzer_state && buzzer_timestamp.elapsed().as_millis() >= 2000 {
             buzzer_state = false;
         }
 
