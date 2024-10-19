@@ -331,8 +331,8 @@ async fn read_drive_can(mut can: CanRx<'static, FDCAN2>)
                                 
                             },
                             0x03 => {
-                                bms.pack_dcl = ((data[1] as u32) << 0) | ((data[0] as u32) << 8);
-                                bms.pack_dcl *= 10;
+                                bms.pack_dcl = (data[3] as u32) | ((data[2] as u32) << 8) | ((data[1] as u32) << 16) | ((data[0] as u32) << 24);
+                                // bms.pack_dcl *= 10;
                             },
                             0x04 => {
 
@@ -583,34 +583,28 @@ async fn main(spawner: Spawner) {
                 // updated_limits = false; not enabled until verified outside of competition
             }
             drive_command(InverterCommand::SetDriveEnable(ready_to_drive), &mut can2_tx).await;
-            
-            if ready_to_drive {     
-                
-                if regen_active && regen_enabled {
-                    // Note: Not legal in UK.
-                    // let mut braking_current: u16 = 0;
-                    // if !bspd_lite {
-                    //     braking_current = MAX_AC_BRAKE_CURRENT as u16;
-                    // }
-                    // drive_command(InverterCommand::SetBrakeCurrent(braking_current as u16), &mut can2_tx).await;
-                }else{
-                    let mut current: u32;
-                    if throttle >= THROTTLE_DEADZONE {
-                        current = MAX_THROTTLE_CURRENT * (throttle - THROTTLE_DEADZONE) as u32 / (255u8 - THROTTLE_DEADZONE) as u32;
-                    }else {
-                        current = 0;
-                    }
-                    
-                    if current > MAX_THROTTLE_CURRENT {
-                        current = MAX_THROTTLE_CURRENT;
-                    }
-                    if bspd_lite || plausability {
-                        current = 0;
-                    }
-                    drive_command(InverterCommand::SetCurrent(current), &mut can2_tx).await;
-                }                
-                
+            //drive_command(InverterCommand::SetMaxDCCurrent(MAX_DC_CURRENT), &mut can2_tx).await;
+            drive_command(InverterCommand::SetMaxACCurrent(MAX_AC_CURRENT), &mut can2_tx).await;
+            if ready_to_drive {
+                if brake_pressure > 15 {
+                    throttle = 0;
+                    bspd_lite = true;
+                }
+                let mut current: u32 = MAX_AC_CURRENT * throttle as u32 / 255;
+                let mut braking_current: u16 = 0;
+                if throttle <= 10 { // Safety limit
+                    current = 0;
+                }
+                if throttle <= 10 {
+                    braking_current = (regen as u16) * 4;
+                }
+                if current > MAX_AC_CURRENT {
+                    current = MAX_AC_CURRENT;
+                }
+                drive_command(InverterCommand::SetBrakeCurrent(braking_current as u16), &mut can2_tx).await;
+                drive_command(InverterCommand::SetCurrent(current), &mut can2_tx).await;
             }
+
             command_timestamp = Instant::now();
         }
 
