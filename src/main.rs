@@ -518,6 +518,7 @@ async fn main(spawner: Spawner) {
             vcu_fault_code = VCUFaultCode::APPSTimeout;
         } else if acu_timeout {
             //vcu_fault_code = VCUFaultCode::ACUTimeout;
+            vcu_fault_code = VCUFaultCode::None;
         } else if inverter_timeout {
             vcu_fault_code = VCUFaultCode::InverterTimeout;
         } else { 
@@ -551,12 +552,12 @@ async fn main(spawner: Spawner) {
             bspd_lite = false;
         }
 
-        if sdc && (brake_pressure > 15) && r2d_toggled && r2d && vcu_fault_code == VCUFaultCode::None {
+        if (brake_pressure > 15) && r2d_toggled && r2d && vcu_fault_code == VCUFaultCode::None {
             ready_to_drive = true;
             buzzer_state = true;
             buzzer_timestamp = Instant::now();
         }
-        if !r2d || vcu_fault_code != VCUFaultCode::None || !sdc {
+        if !r2d || vcu_fault_code != VCUFaultCode::None {
             ready_to_drive = false;
         }
         if buzzer_state && buzzer_timestamp.elapsed().as_millis() >= 2000 {
@@ -579,12 +580,12 @@ async fn main(spawner: Spawner) {
                 drive_command(InverterCommand::SetMaxDCCurrent(dcl), &mut can2_tx).await;
                 drive_command(InverterCommand::SetMaxACBrakeCurrent(MAX_AC_BRAKE_CURRENT), &mut can2_tx).await;
                 drive_command(InverterCommand::SetMaxDCBrakeCurrent(MAX_DC_BRAKE_CURRENT), &mut can2_tx).await;
-                drive_command(InverterCommand::SetMaxACCurrent(MAX_AC_CURRENT), &mut can2_tx).await;
+                // drive_command(InverterCommand::SetMaxACCurrent(MAX_AC_CURRENT), &mut can2_tx).await;
                 // updated_limits = false; not enabled until verified outside of competition
             }
             drive_command(InverterCommand::SetDriveEnable(ready_to_drive), &mut can2_tx).await;
             //drive_command(InverterCommand::SetMaxDCCurrent(MAX_DC_CURRENT), &mut can2_tx).await;
-            drive_command(InverterCommand::SetMaxACCurrent(MAX_AC_CURRENT), &mut can2_tx).await;
+            //drive_command(InverterCommand::SetMaxACCurrent(MAX_AC_CURRENT), &mut can2_tx).await;
             if ready_to_drive {
                 if brake_pressure > 15 {
                     throttle = 0;
@@ -601,7 +602,7 @@ async fn main(spawner: Spawner) {
                 if current > MAX_AC_CURRENT {
                     current = MAX_AC_CURRENT;
                 }
-                drive_command(InverterCommand::SetBrakeCurrent(braking_current as u16), &mut can2_tx).await;
+                //drive_command(InverterCommand::SetBrakeCurrent(braking_current as u16), &mut can2_tx).await;
                 drive_command(InverterCommand::SetCurrent(current), &mut can2_tx).await;
             }
 
