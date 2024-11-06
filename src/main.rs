@@ -517,7 +517,7 @@ async fn main(spawner: Spawner) {
         } else if apps_timeout {
             vcu_fault_code = VCUFaultCode::APPSTimeout;
         } else if acu_timeout {
-            vcu_fault_code = VCUFaultCode::ACUTimeout;
+            //vcu_fault_code = VCUFaultCode::ACUTimeout;
         } else if inverter_timeout {
             vcu_fault_code = VCUFaultCode::InverterTimeout;
         } else { 
