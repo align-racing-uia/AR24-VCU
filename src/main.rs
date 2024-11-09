@@ -577,7 +577,7 @@ async fn main(spawner: Spawner) {
         if command_timestamp.elapsed().as_millis() >= 10 {
             //It is very important to not use a Mutex Lock and a canbus await at the same place, as this can cause mutex deadlocks
             if updated_limits {
-                drive_command(InverterCommand::SetMaxDCCurrent(dcl), &mut can2_tx).await;
+                //drive_command(InverterCommand::SetMaxDCCurrent(dcl), &mut can2_tx).await;
                 drive_command(InverterCommand::SetMaxACBrakeCurrent(MAX_AC_BRAKE_CURRENT), &mut can2_tx).await;
                 drive_command(InverterCommand::SetMaxDCBrakeCurrent(MAX_DC_BRAKE_CURRENT), &mut can2_tx).await;
                 // drive_command(InverterCommand::SetMaxACCurrent(MAX_AC_CURRENT), &mut can2_tx).await;
